@@ -1,0 +1,7 @@
+# .env-Datei ignorieren
+.env
+
+# Node.js-spezifische Dateien/Ordner
+node_modules/
+npm-debug.log
+.DS_Store
