@@ -271,8 +271,40 @@ export class CalendarPlanner {
     const now = Date.now();
     if (now - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
       emitLog({ message: 'Starte Kontext-Update...', emoji: '🔄' });
-      emitProgress({ stage: 'loading', taskCount: 0 });
       
+      // Lade Kalenderkontext
+      let calendarContext = 'Keine Kalendereinträge';
+      const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '7');
+      const today = new Date();
+      const endDate = new Date(today);
+      endDate.setDate(today.getDate() + daysToInclude);
+      
+      emitLog({ message: `Lade Kalenderdaten für die nächsten ${daysToInclude} Tage...`, emoji: '📅' });
+      
+      if (this.msGraphClient) {
+        const startOfDay = new Date(today.setHours(0, 0, 0, 0)).toISOString();
+        const endOfPeriod = new Date(endDate.setHours(23, 59, 59, 999)).toISOString();
+
+        const calendarEvents = await this.msGraphClient
+          .api(`/users/${process.env.MS_USER_EMAIL}/calendar/events`)
+          .select('subject,start,end')
+          .filter(`start/dateTime ge '${startOfDay}' and end/dateTime le '${endOfPeriod}'`)
+          .get();
+
+        if (calendarEvents.value.length > 0) {
+          calendarContext = calendarEvents.value
+            .map((event: Event) => {
+              const start = new Date(event.start?.dateTime || '');
+              const end = new Date(event.end?.dateTime || '');
+              return `- ${event.subject} (${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()})`;
+            })
+            .join('\n');
+        }
+
+        emitLog({ message: `${calendarEvents.value.length} Kalendereinträge gefunden`, emoji: '📊' });
+      }
+      
+      // Lade Todoist Tasks
       emitLog({ message: 'Lade Todoist Tasks...', emoji: '📥' });
       const tasks = await this.todoistApi.getTasks();
       emitLog({ message: `Gefunden: ${tasks.length} Tasks`, emoji: '📊' });
@@ -297,7 +329,6 @@ export class CalendarPlanner {
           projectId: task.projectId
         });
 
-        emitLog({ message: `Verarbeite Task ${i + 1}/${tasks.length}: ${task.content.substring(0, 50)}...`, emoji: '✓' });
         emitProgress({ 
           stage: 'processing', 
           taskCount: tasks.length,
@@ -310,10 +341,15 @@ export class CalendarPlanner {
         }
       }
       
+      // Erstelle kombinierten Kontext
       emitLog({ message: 'Erstelle Kontext-String...', emoji: '📝' });
-      this.allTasksContext = this.todoistTasks
-        .map(t => `- ${t.content}`)
-        .join('\n');
+      this.allTasksContext = `
+Kalendereinträge für die nächsten ${daysToInclude} Tage:
+${calendarContext}
+
+Alle Aufgaben:
+${this.todoistTasks.map(t => `- ${t.content}`).join('\n')}
+`;
       
       this.lastContextUpdate = now;
       emitLog({ message: `Kontext-Update abgeschlossen um ${new Date(now).toLocaleTimeString()}`, emoji: '✅' });
