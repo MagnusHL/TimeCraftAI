@@ -576,4 +576,35 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       taskSuggestions: this.taskSuggestionsCache
     };
   }
+
+  public async getCurrentContext(): Promise<string> {
+    try {
+      // Nur den Kontext aktualisieren, wenn nötig
+      if (Date.now() - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
+        await this.updateTaskContext();
+      }
+      
+      // Wenn kein Kontext vorhanden ist, einen leeren Kontext zurückgeben
+      if (!this.allTasksContext) {
+        return `Keine Daten verfügbar.
+Mögliche Gründe:
+- Keine Verbindung zu MS Graph
+- Keine Todoist Tasks geladen
+- Kontext noch nicht initialisiert`;
+      }
+      
+      return this.allTasksContext;
+    } catch (error) {
+      console.error('Fehler beim Laden des Kontexts:', error);
+      
+      // Strukturierte Fehlermeldung zurückgeben
+      return `Fehler beim Laden des Kontexts:
+${error instanceof Error ? error.message : 'Unbekannter Fehler'}
+
+Aktueller Status:
+- Letztes Update: ${this.lastContextUpdate ? new Date(this.lastContextUpdate).toLocaleString() : 'Nie'}
+- Tasks geladen: ${this.todoistTasks.length}
+- MS Graph Client: ${this.msGraphClient ? 'Initialisiert' : 'Nicht initialisiert'}`;
+    }
+  }
 } 

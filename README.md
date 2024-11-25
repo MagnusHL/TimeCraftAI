@@ -25,7 +25,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
     - Bereits geplanten Aufgaben
     - Auslastung der Folgetage
   - Bei Tagesauswahl: Berücksichtigung nur der am gewählten Tag fälligen Aufgaben (ohne Überfällige)
-- [X] oben rechts einen Knopf einbauen in dem dann in einem popup ähnlichen Fenster der Kontext der openai mitgegeben wird zur kontrolle angezeigt wird
+- [o] oben rechts einen Knopf einbauen in dem dann in einem popup ähnlichen Fenster der Kontext der openai mitgegeben wird zur kontrolle angezeigt wird
 - [o] kein regelmäßiger Refresh der Änderungsvorschläge, nur bei Tageswechsel oder auf Knopfdruck oben rechts und beim starten der app
 - [o] der Kontext für openai, also alle AUfgaben und Projekte werden im Hintergrund alle 5 Minuten aktualisiert und zwischen gespeichert. So dass die Oberfläche nicht so hängt. oben rechts in einer Leiste (npx shadcn@latest add menubar
 ) wird dann der Status angezeigt.

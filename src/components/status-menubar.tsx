@@ -2,10 +2,10 @@
 
 import { MenubarContent, MenubarItem, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger, Menubar } from "@/components/ui/menubar"
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer"
-import { Loader2, RefreshCw, Terminal } from "lucide-react"
+import { Loader2, RefreshCw, Terminal, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef } from "react"
 
 interface LogEntry {
   timestamp: Date;
@@ -23,6 +23,8 @@ interface StatusMenubarProps {
 export function StatusMenubar({ loadedTasks, lastContextUpdate, isLoading, onRefresh }: StatusMenubarProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isContextDrawerOpen, setIsContextDrawerOpen] = useState(false);
+  const [context, setContext] = useState<string>('');
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,6 +46,17 @@ export function StatusMenubar({ loadedTasks, lastContextUpdate, isLoading, onRef
   }, []);
 
   const lastThreeLogs = logs.slice(-3);
+
+  const fetchContext = async () => {
+    try {
+      const response = await fetch('/api/dashboard/context');
+      const data = await response.json();
+      setContext(data.context);
+    } catch (error) {
+      console.error('Fehler beim Laden des Kontexts:', error);
+      setContext('Fehler beim Laden des Kontexts');
+    }
+  };
 
   return (
     <div className="fixed top-0 right-0 p-2 flex items-center gap-2">
@@ -73,6 +86,33 @@ export function StatusMenubar({ loadedTasks, lastContextUpdate, isLoading, onRef
                   </div>
                 ))}
               </div>
+            </ScrollArea>
+          </div>
+        </DrawerContent>
+      </Drawer>
+
+      <Drawer open={isContextDrawerOpen} onOpenChange={setIsContextDrawerOpen}>
+        <DrawerTrigger asChild>
+          <Button 
+            variant="outline" 
+            size="icon"
+            onClick={() => {
+              fetchContext();
+              setIsContextDrawerOpen(true);
+            }}
+          >
+            <FileText className="h-4 w-4" />
+          </Button>
+        </DrawerTrigger>
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>Aktueller Kontext</DrawerTitle>
+          </DrawerHeader>
+          <div className="p-4">
+            <ScrollArea className="h-[500px] rounded-md border p-4">
+              <pre className="whitespace-pre-wrap text-sm font-mono">
+                {context}
+              </pre>
             </ScrollArea>
           </div>
         </DrawerContent>
