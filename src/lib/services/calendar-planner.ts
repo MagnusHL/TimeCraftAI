@@ -55,6 +55,7 @@ export class CalendarPlanner {
   private todoistApi: TodoistApi;
   private openai: OpenAI;
   private lastSuggestionsUpdate: Date | null = null;
+  private taskSuggestionsCache: Record<string, TaskSuggestion> = {};
   
   constructor() {
     this.todoistApi = new TodoistApi(process.env.TODOIST_API_TOKEN || '');
@@ -293,11 +294,18 @@ export class CalendarPlanner {
     const { overdue, dueToday } = await this.loadTodoistTasks();
     const allRelevantTasks = [...overdue, ...dueToday];
     
-    const suggestions: Record<string, TaskSuggestion> = {};
+    const unoptimizedTasks = allRelevantTasks.filter(
+      task => !this.taskSuggestionsCache[task.id]
+    );
+
+    emitLog({ 
+      message: `${unoptimizedTasks.length} neue Tasks zu optimieren`, 
+      emoji: '📝' 
+    });
     
-    for (let i = 0; i < allRelevantTasks.length; i++) {
-      const task = allRelevantTasks[i];
-      emitLog({ message: `Optimiere Task ${i + 1}/${allRelevantTasks.length}: ${task.content}`, emoji: '🔄' });
+    for (let i = 0; i < unoptimizedTasks.length; i++) {
+      const task = unoptimizedTasks[i];
+      emitLog({ message: `Optimiere Task ${i + 1}/${unoptimizedTasks.length}: ${task.content}`, emoji: '🔄' });
       
       try {
         const systemPrompt = `Du bist ein Experte für die Optimierung von Aufgabenbeschreibungen. 
@@ -325,11 +333,11 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
         });
 
         const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
-        suggestions[task.id] = suggestion;
+        this.taskSuggestionsCache[task.id] = suggestion;
         
         emitProgress({ 
           stage: 'optimizing',
-          taskCount: allRelevantTasks.length,
+          taskCount: unoptimizedTasks.length,
           processedTasks: i + 1,
           currentTask: task.content,
           optimizedTask: {
@@ -348,7 +356,7 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       }
     }
 
-    return suggestions;
+    return this.taskSuggestionsCache;
   }
 
   private calculateDuration(start: Date, end: Date): number {
@@ -442,14 +450,17 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       }
     });
     
-    // Dann Optimierungen
-    let taskSuggestions = {};
-    if (forceUpdate || await this.shouldUpdateSuggestions()) {
-      emitLog({ message: 'Generiere neue Vorschläge...', emoji: '🤖' });
+    // Verwende den Cache für die Suggestions
+    let taskSuggestions = this.taskSuggestionsCache;
+    if (forceUpdate) {
+      emitLog({ message: 'Erzwinge neue Optimierungen...', emoji: '🤖' });
+      this.taskSuggestionsCache = {}; // Cache leeren bei Force Update
       taskSuggestions = await this.suggestOptimizations();
-      this.lastSuggestionsUpdate = new Date();
+    } else if (Object.keys(this.taskSuggestionsCache).length === 0) {
+      emitLog({ message: 'Generiere erste Optimierungen...', emoji: '🤖' });
+      taskSuggestions = await this.suggestOptimizations();
     } else {
-      emitLog({ message: 'Verwende bestehende Vorschläge', emoji: 'ℹ️' });
+      emitLog({ message: 'Verwende gespeicherte Optimierungen', emoji: 'ℹ️' });
     }
     
     emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
