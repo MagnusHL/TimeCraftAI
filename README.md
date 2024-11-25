@@ -36,3 +36,5 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 - [X] letztes Kontext-Update zeigen
 - [o] Kalender-Events der nächsten X Tage (.env Einstellung) in den Kontext mitaufnehmen
 - [ ] Navigation auf eine Sidebar umbauen. Dort sind alle Knöpfe, die jetzt am oberen Rand sind, untergebracht und auch die Tabs, also Tabs fallen weg und diese Menübar fällt weg. Alle diese Sachen kommen in eine Sidebar. npx shadcn@latest add sidebar
+- [ ] unten LInks der Status text bzw. knopf hat keine funktion mehr. da konnte man sionst sehen wann das letzte kontext update lief und was die letzten aufgaben wren. Vielleicht mit einer Hover Card?
+- [ ] doppelte oder ähnlichen Aufgaben finden

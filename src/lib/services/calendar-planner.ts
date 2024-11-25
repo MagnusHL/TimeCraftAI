@@ -25,6 +25,7 @@ export interface TodoistTask {
   } | null;
   priority: number;
   projectId: string;
+  optimized?: boolean;
 }
 
 export interface TaskSuggestion {
@@ -117,7 +118,18 @@ export class CalendarPlanner {
 
       if (cacheExists) {
         const cacheData = await fs.readFile(this.CALENDAR_CACHE_FILE, 'utf-8');
-        this.calendarCache = JSON.parse(cacheData);
+        const rawCache = JSON.parse(cacheData);
+        
+        // Konvertiere die Datumsstrings zurück zu Date-Objekten
+        this.calendarCache = {
+          events: rawCache.events.map((event: any) => ({
+            ...event,
+            start: new Date(event.start),
+            end: new Date(event.end)
+          })),
+          lastUpdate: rawCache.lastUpdate
+        };
+        
         emitLog({ message: `Kalender-Cache geladen: ${this.calendarCache.events.length} Einträge`, emoji: '💾' });
       }
     } catch (error) {
@@ -174,12 +186,12 @@ export class CalendarPlanner {
 
   public async loadCalendarData() {
     const now = Date.now();
-    const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '7');
+    const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '30');
     
     // Prüfe ob Cache aktuell ist
     if (now - this.calendarCache.lastUpdate < this.CONTEXT_UPDATE_INTERVAL) {
       emitLog({ message: 'Verwende gecachte Kalenderdaten', emoji: 'ℹ️' });
-      this.timeSlots = this.calendarCache.events;
+      this.timeSlots = this.filterTodayEvents(this.calendarCache.events);
       return;
     }
 
@@ -188,12 +200,24 @@ export class CalendarPlanner {
     }
 
     try {
+      // Lade Termine ab heute 00:00 Uhr
       const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Ende der Zeitspanne ist heute + daysToInclude Tage um 23:59:59
       const endDate = new Date(today);
-      endDate.setDate(today.getDate() + daysToInclude);
+      endDate.setDate(endDate.getDate() + (daysToInclude - 1)); // -1 weil heute auch mitgezählt wird
+      endDate.setHours(23, 59, 59, 999);
 
-      const startOfPeriod = new Date(today.setHours(0, 0, 0, 0)).toISOString();
-      const endOfPeriod = new Date(endDate.setHours(23, 59, 59, 999)).toISOString();
+      const startOfPeriod = today.toISOString();
+      const endOfPeriod = endDate.toISOString();
+
+      console.log('Loading calendar data:', {
+        start: startOfPeriod,
+        end: endOfPeriod,
+        today: today.toISOString(),
+        endDate: endDate.toISOString()
+      });
 
       emitLog({ message: `Lade Kalenderdaten für die nächsten ${daysToInclude} Tage...`, emoji: '📅' });
 
@@ -201,9 +225,11 @@ export class CalendarPlanner {
         .api(`/users/${process.env.MS_USER_EMAIL}/calendar/events`)
         .select('subject,start,end')
         .filter(`start/dateTime ge '${startOfPeriod}' and end/dateTime le '${endOfPeriod}'`)
+        .orderby('start/dateTime')
         .get();
 
-      this.timeSlots = response.value.map((event: Event) => ({
+      // Alle Termine im Cache speichern
+      const allEvents = response.value.map((event: Event) => ({
         start: new Date(event.start?.dateTime || ''),
         end: new Date(event.end?.dateTime || ''),
         title: event.subject || '',
@@ -213,21 +239,32 @@ export class CalendarPlanner {
         )
       }));
 
+      console.log('Loaded events:', allEvents.map(e => ({
+        title: e.title,
+        start: e.start.toISOString(),
+        end: e.end.toISOString()
+      })));
+
       // Cache aktualisieren
       this.calendarCache = {
-        events: this.timeSlots,
+        events: allEvents,
         lastUpdate: now
       };
       await this.saveCalendarCacheToDisk();
       
-      emitLog({ message: `${this.timeSlots.length} Kalendereinträge für ${daysToInclude} Tage aktualisiert`, emoji: '📅' });
+      // Für UI nur heutige Events filtern
+      this.timeSlots = this.filterTodayEvents(allEvents);
+      
+      emitLog({ 
+        message: `${allEvents.length} Kalendereinträge geladen (${this.timeSlots.length} heute)`, 
+        emoji: '📅' 
+      });
     } catch (error) {
       console.error('Kalenderdaten Fehler:', error);
       
-      // Bei Fehler: Verwende Cache falls vorhanden
       if (this.calendarCache.events.length > 0) {
         emitLog({ message: 'Verwende Cache wegen Fehler beim Laden', emoji: '⚠️' });
-        this.timeSlots = this.calendarCache.events;
+        this.timeSlots = this.filterTodayEvents(this.calendarCache.events);
       } else {
         throw error;
       }
@@ -240,8 +277,16 @@ export class CalendarPlanner {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
-      emitLog({ message: `Lade ${tasks.length} Todoist Tasks...`, emoji: '📝' });
-      
+      // Lade optimierte Tasks
+      let optimizedTasks: string[] = [];
+      try {
+        const optimizedTasksCache = path.join(process.cwd(), 'data', 'optimized-tasks.json');
+        const existing = await fs.readFile(optimizedTasksCache, 'utf-8');
+        optimizedTasks = JSON.parse(existing);
+      } catch (e) {
+        // Cache existiert noch nicht
+      }
+
       const overdue: TodoistTask[] = [];
       const dueToday: TodoistTask[] = [];
 
@@ -258,14 +303,13 @@ export class CalendarPlanner {
               datetime: task.due.datetime
             },
             priority: task.priority,
-            projectId: task.projectId
+            projectId: task.projectId,
+            optimized: optimizedTasks.includes(task.id)  // Setze optimized Flag
           };
 
           if (dueDate < today) {
-            emitLog({ message: `Überfällige Aufgabe gefunden: ${task.content}`, emoji: '⏰' });
             overdue.push(mappedTask);
           } else if (dueDate.getTime() === today.getTime()) {
-            emitLog({ message: `Heute fällige Aufgabe gefunden: ${task.content}`, emoji: '📅' });
             dueToday.push(mappedTask);
           }
         }
@@ -300,16 +344,11 @@ export class CalendarPlanner {
     const workStart = new Date(today.setHours(parseInt(process.env.WORK_BEGIN || '9'), 0, 0, 0));
     const workEnd = new Date(today.setHours(parseInt(process.env.WORK_END || '17'), 0, 0, 0));
     
-    // Filtere nur die Events für heute
-    const todayEvents = this.timeSlots.filter(slot => {
-      const eventDate = new Date(slot.start);
-      return eventDate.toDateString() === today.toDateString();
-    });
+    // Hole und sortiere die Events für heute
+    const todayEvents = this.filterTodayEvents(this.timeSlots);
 
     const freeSlots: TimeSlot[] = [];
     let currentTime = workStart;
-
-    todayEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
 
     for (const slot of todayEvents) {
       if (currentTime < slot.start) {
@@ -340,37 +379,11 @@ export class CalendarPlanner {
     if (now - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
       emitLog({ message: 'Starte Kontext-Update...', emoji: '🔄' });
       
-      // Lade Kalenderkontext
-      let calendarContext = 'Keine Kalendereinträge';
-      const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '7');
-      const today = new Date();
-      const endDate = new Date(today);
-      endDate.setDate(today.getDate() + daysToInclude);
+      // Lade Kalenderkontext separat
+      const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '30');
+      const calendarContext = await this.loadContextCalendarData();
       
-      emitLog({ message: `Lade Kalenderdaten für die nächsten ${daysToInclude} Tage...`, emoji: '📅' });
-      
-      if (this.msGraphClient) {
-        const startOfDay = new Date(today.setHours(0, 0, 0, 0)).toISOString();
-        const endOfPeriod = new Date(endDate.setHours(23, 59, 59, 999)).toISOString();
-
-        const calendarEvents = await this.msGraphClient
-          .api(`/users/${process.env.MS_USER_EMAIL}/calendar/events`)
-          .select('subject,start,end')
-          .filter(`start/dateTime ge '${startOfDay}' and end/dateTime le '${endOfPeriod}'`)
-          .get();
-
-        if (calendarEvents.value.length > 0) {
-          calendarContext = calendarEvents.value
-            .map((event: Event) => {
-              const start = new Date(event.start?.dateTime || '');
-              const end = new Date(event.end?.dateTime || '');
-              return `- ${event.subject} (${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()})`;
-            })
-            .join('\n');
-        }
-
-        emitLog({ message: `${calendarEvents.value.length} Kalendereinträge gefunden`, emoji: '📊' });
-      }
+      emitLog({ message: `Kalenderdaten für die nächsten ${daysToInclude} Tage geladen`, emoji: '📅' });
       
       // Lade Todoist Tasks
       emitLog({ message: 'Lade Todoist Tasks...', emoji: '📥' });
@@ -443,7 +456,9 @@ ${this.todoistTasks.map(t => `- ${t.content}`).join('\n')}
     const relevantTaskIds = new Set(allRelevantTasks.map(task => task.id));
     
     // Finde Tasks die im Cache fehlen
-    const missingTasks = allRelevantTasks.filter(task => !cachedTaskIds.has(task.id));
+    const missingTasks = allRelevantTasks.filter(
+      task => !this.taskSuggestionsCache[task.id] && !task.optimized
+    );
     // Finde verwaiste Cache-Einträge (optional: Aufräumen)
     const orphanedCacheEntries = [...cachedTaskIds].filter(id => !relevantTaskIds.has(id));
 
@@ -674,5 +689,106 @@ Aktueller Status:
 - Tasks geladen: ${this.todoistTasks.length}
 - MS Graph Client: ${this.msGraphClient ? 'Initialisiert' : 'Nicht initialisiert'}`;
     }
+  }
+
+  public async markTaskAsOptimized(taskId: string): Promise<void> {
+    // Aktualisiere die Aufgabe in den todoistTasks
+    this.todoistTasks = this.todoistTasks.map(task => 
+      task.id === taskId 
+        ? { ...task, optimized: true }
+        : task
+    );
+
+    // Speichere den optimierten Status im Cache
+    const optimizedTasksCache = path.join(process.cwd(), 'data', 'optimized-tasks.json');
+    try {
+      let optimizedTasks: string[] = [];
+      try {
+        const existing = await fs.readFile(optimizedTasksCache, 'utf-8');
+        optimizedTasks = JSON.parse(existing);
+      } catch (e) {
+        // Cache existiert noch nicht
+      }
+      
+      if (!optimizedTasks.includes(taskId)) {
+        optimizedTasks.push(taskId);
+        await fs.writeFile(optimizedTasksCache, JSON.stringify(optimizedTasks, null, 2));
+      }
+    } catch (error) {
+      console.error('Fehler beim Speichern des optimierten Status:', error);
+    }
+
+    // Entferne die Vorschläge aus dem Cache
+    delete this.taskSuggestionsCache[taskId];
+    await this.saveCacheToDisk();
+  }
+
+  // Neue Methode für Kontext-Kalendereinträge
+  private async loadContextCalendarData(): Promise<string> {
+    if (this.calendarCache.events.length === 0) {
+      return 'Keine Kalendereinträge im Cache';
+    }
+
+    return this.calendarCache.events
+      .map(event => {
+        // Konvertiere Strings zu Date-Objekten
+        const start = new Date(event.start);
+        const end = new Date(event.end);
+        return `- ${event.title} (${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()})`;
+      })
+      .join('\n');
+  }
+
+  private filterTodayEvents(events: TimeSlot[]): TimeSlot[] {
+    // Setze den Start des heutigen Tages auf Mitternacht
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Ende des heutigen Tages
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    console.log('Filtering events:', {
+      todayStart: today.toISOString(),
+      todayEnd: tomorrow.toISOString(),
+      totalEvents: events.length,
+      eventDates: events.map(e => ({
+        start: new Date(e.start).toISOString(),
+        title: e.title
+      }))
+    });
+
+    const todayEvents = events
+      .filter(event => {
+        const eventStart = new Date(event.start);
+        // Vergleiche nur die Datumsteile
+        const eventDate = new Date(eventStart);
+        eventDate.setHours(0, 0, 0, 0);
+        
+        const isToday = eventDate.getTime() === today.getTime();
+        console.log('Event check:', {
+          event: event.title,
+          eventDate: eventDate.toISOString(),
+          today: today.toISOString(),
+          isToday
+        });
+        
+        return isToday;
+      })
+      .sort((a, b) => {
+        const dateA = new Date(a.start);
+        const dateB = new Date(b.start);
+        return dateA.getTime() - dateB.getTime();
+      });
+
+    console.log('Filtered today events:', {
+      count: todayEvents.length,
+      events: todayEvents.map(e => ({
+        title: e.title,
+        start: new Date(e.start).toISOString()
+      }))
+    });
+
+    return todayEvents;
   }
 } 

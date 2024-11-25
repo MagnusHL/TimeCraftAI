@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Clock, AlertCircle } from 'lucide-react'
+import { Clock, AlertCircle, Check } from 'lucide-react'
 import type { DashboardData, TodoistTask, TaskSuggestion, TimeSlot } from '@/lib/services/calendar-planner'
 import { Skeleton } from "@/components/ui/skeleton"
 import { Loader2 } from "lucide-react"
@@ -42,7 +42,7 @@ const formatDate = (date: Date | string) => {
   });
 };
 
-function TaskCard({ task, suggestions, isDueToday }: { 
+function TaskCard({ task, suggestions, isDueToday, onTitleUpdate }: { 
   task: TodoistTask,
   suggestions: { 
     suggestions: Array<{
@@ -51,8 +51,47 @@ function TaskCard({ task, suggestions, isDueToday }: {
       estimatedDuration: number;
     }> 
   } | undefined,
-  isDueToday: boolean 
+  isDueToday: boolean,
+  onTitleUpdate: (taskId: string, newTitle: string) => Promise<void>
 }) {
+  const [isUpdating, setIsUpdating] = useState<string | null>(null); // Speichert die ID des aktuell aktualisierten Vorschlags
+
+  // Zeige keine Vorschläge für optimierte Tasks
+  if (task.optimized) {
+    return (
+      <div className="w-full border rounded-lg p-4">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{task.content}</span>
+            <Badge variant="success" className="bg-green-100 text-green-800">
+              Optimiert
+            </Badge>
+          </div>
+          <Badge variant={isDueToday ? "default" : "destructive"}>
+            {isDueToday ? "Heute fällig" : "Überfällig"}
+          </Badge>
+        </div>
+      </div>
+    );
+  }
+
+  const handleTitleUpdate = async (suggestionIndex: number) => {
+    if (!suggestions) return;
+    
+    const suggestion = suggestions.suggestions[suggestionIndex];
+    setIsUpdating(suggestionIndex.toString());
+    
+    try {
+      await onTitleUpdate(task.id, suggestion.newTitle);
+      // Erfolg wird durch Parent-Komponente gehandhabt
+    } catch (error) {
+      console.error('Fehler beim Aktualisieren des Titels:', error);
+      // Optional: Zeige Fehlermeldung
+    } finally {
+      setIsUpdating(null);
+    }
+  };
+
   return (
     <Accordion type="single" collapsible className="w-full border rounded-lg">
       <AccordionItem value="task" className="border-none">
@@ -61,6 +100,11 @@ function TaskCard({ task, suggestions, isDueToday }: {
             <div className="flex items-center gap-2">
               <span className="font-medium text-left">{task.content}</span>
               {!suggestions && <Loader2 className="h-4 w-4 animate-spin" />}
+              {task.optimized && (
+                <Badge variant="secondary" className="ml-2">
+                  Optimiert
+                </Badge>
+              )}
             </div>
             <Badge variant={isDueToday ? "default" : "destructive"} className="ml-2">
               {isDueToday ? "Heute fällig" : "Überfällig"}
@@ -83,6 +127,24 @@ function TaskCard({ task, suggestions, isDueToday }: {
                     <p className="text-sm text-gray-600">
                       {suggestion.reason}
                     </p>
+                    <Button
+                      onClick={() => handleTitleUpdate(index)}
+                      disabled={!!isUpdating}
+                      className="w-full mt-2"
+                      variant="secondary"
+                    >
+                      {isUpdating === index.toString() ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Wird übernommen...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="mr-2 h-4 w-4" />
+                          Vorschlag übernehmen
+                        </>
+                      )}
+                    </Button>
                   </AccordionContent>
                 </AccordionItem>
               ))}
@@ -434,6 +496,48 @@ export function DashboardView() {
     }
   };
 
+  const handleTitleUpdate = useCallback(async (taskId: string, newTitle: string) => {
+    try {
+      const response = await fetch('/api/todoist/update-task', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          taskId,
+          newTitle,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Fehler beim Aktualisieren der Aufgabe');
+
+      // Aktualisiere lokalen State
+      setData(prevData => {
+        if (!prevData) return prevData;
+
+        const updateTaskInList = (tasks: TodoistTask[]) =>
+          tasks.map(task => 
+            task.id === taskId 
+              ? { ...task, content: newTitle, optimized: true }
+              : task
+          );
+
+        return {
+          ...prevData,
+          overdueTasks: updateTaskInList(prevData.overdueTasks),
+          dueTodayTasks: updateTaskInList(prevData.dueTodayTasks),
+          taskSuggestions: {
+            ...prevData.taskSuggestions,
+            [taskId]: undefined // Entferne die Vorschläge für diese Aufgabe
+          }
+        };
+      });
+    } catch (error) {
+      console.error('Fehler beim Aktualisieren des Titels:', error);
+      throw error;
+    }
+  }, []);
+
   // Zeige Fehler an
   if (error) {
     return (
@@ -596,6 +700,7 @@ export function DashboardView() {
                         task={task}
                         suggestions={displayData.taskSuggestions[task.id]}
                         isDueToday={false}
+                        onTitleUpdate={handleTitleUpdate}
                       />
                     ))}
                     {(!displayData?.overdueTasks || displayData.overdueTasks.length === 0) && (
@@ -617,6 +722,7 @@ export function DashboardView() {
                         task={task}
                         suggestions={displayData.taskSuggestions[task.id]}
                         isDueToday={true}
+                        onTitleUpdate={handleTitleUpdate}
                       />
                     ))}
                     {(!displayData?.dueTodayTasks || displayData.dueTodayTasks.length === 0) && (
