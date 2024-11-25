@@ -58,7 +58,9 @@ export class CalendarPlanner {
   private openai: OpenAI;
   private lastSuggestionsUpdate: Date | null = null;
   private taskSuggestionsCache: Record<string, TaskSuggestion> = {};
+  private calendarCache: { events: TimeSlot[]; lastUpdate: number } = { events: [], lastUpdate: 0 };
   private readonly CACHE_FILE = path.join(process.cwd(), 'data', 'suggestions-cache.json');
+  private readonly CALENDAR_CACHE_FILE = path.join(process.cwd(), 'data', 'calendar-cache.json');
   
   constructor() {
     this.todoistApi = new TodoistApi(process.env.TODOIST_API_TOKEN || '');
@@ -66,6 +68,7 @@ export class CalendarPlanner {
       apiKey: process.env.OPENAI_API_KEY
     });
     this.loadCacheFromDisk().catch(console.error);
+    this.loadCalendarCacheFromDisk().catch(console.error);
   }
 
   private async loadCacheFromDisk() {
@@ -104,6 +107,39 @@ export class CalendarPlanner {
     }
   }
 
+  private async loadCalendarCacheFromDisk() {
+    try {
+      await fs.mkdir(path.join(process.cwd(), 'data'), { recursive: true });
+      
+      const cacheExists = await fs.access(this.CALENDAR_CACHE_FILE)
+        .then(() => true)
+        .catch(() => false);
+
+      if (cacheExists) {
+        const cacheData = await fs.readFile(this.CALENDAR_CACHE_FILE, 'utf-8');
+        this.calendarCache = JSON.parse(cacheData);
+        emitLog({ message: `Kalender-Cache geladen: ${this.calendarCache.events.length} Einträge`, emoji: '💾' });
+      }
+    } catch (error) {
+      console.error('Fehler beim Laden des Kalender-Caches:', error);
+      emitLog({ message: 'Fehler beim Laden des Kalender-Caches', emoji: '❌' });
+    }
+  }
+
+  private async saveCalendarCacheToDisk() {
+    try {
+      await fs.writeFile(
+        this.CALENDAR_CACHE_FILE,
+        JSON.stringify(this.calendarCache, null, 2),
+        'utf-8'
+      );
+      emitLog({ message: 'Kalender-Cache gespeichert', emoji: '💾' });
+    } catch (error) {
+      console.error('Fehler beim Speichern des Kalender-Caches:', error);
+      emitLog({ message: 'Fehler beim Speichern des Kalender-Caches', emoji: '❌' });
+    }
+  }
+
   public async initialize() {
     await this.initializeMsGraphClient();
   }
@@ -137,19 +173,34 @@ export class CalendarPlanner {
   }
 
   public async loadCalendarData() {
+    const now = Date.now();
+    const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '7');
+    
+    // Prüfe ob Cache aktuell ist
+    if (now - this.calendarCache.lastUpdate < this.CONTEXT_UPDATE_INTERVAL) {
+      emitLog({ message: 'Verwende gecachte Kalenderdaten', emoji: 'ℹ️' });
+      this.timeSlots = this.calendarCache.events;
+      return;
+    }
+
     if (!this.msGraphClient) {
       throw new Error('MS Graph Client nicht initialisiert');
     }
 
     try {
       const today = new Date();
-      const startOfDay = new Date(today.setHours(0, 0, 0, 0)).toISOString();
-      const endOfDay = new Date(today.setHours(23, 59, 59, 999)).toISOString();
+      const endDate = new Date(today);
+      endDate.setDate(today.getDate() + daysToInclude);
+
+      const startOfPeriod = new Date(today.setHours(0, 0, 0, 0)).toISOString();
+      const endOfPeriod = new Date(endDate.setHours(23, 59, 59, 999)).toISOString();
+
+      emitLog({ message: `Lade Kalenderdaten für die nächsten ${daysToInclude} Tage...`, emoji: '📅' });
 
       const response = await this.msGraphClient
         .api(`/users/${process.env.MS_USER_EMAIL}/calendar/events`)
         .select('subject,start,end')
-        .filter(`start/dateTime ge '${startOfDay}' and end/dateTime le '${endOfDay}'`)
+        .filter(`start/dateTime ge '${startOfPeriod}' and end/dateTime le '${endOfPeriod}'`)
         .get();
 
       this.timeSlots = response.value.map((event: Event) => ({
@@ -161,9 +212,25 @@ export class CalendarPlanner {
           new Date(event.end?.dateTime || '')
         )
       }));
+
+      // Cache aktualisieren
+      this.calendarCache = {
+        events: this.timeSlots,
+        lastUpdate: now
+      };
+      await this.saveCalendarCacheToDisk();
+      
+      emitLog({ message: `${this.timeSlots.length} Kalendereinträge für ${daysToInclude} Tage aktualisiert`, emoji: '📅' });
     } catch (error) {
       console.error('Kalenderdaten Fehler:', error);
-      throw error;
+      
+      // Bei Fehler: Verwende Cache falls vorhanden
+      if (this.calendarCache.events.length > 0) {
+        emitLog({ message: 'Verwende Cache wegen Fehler beim Laden', emoji: '⚠️' });
+        this.timeSlots = this.calendarCache.events;
+      } else {
+        throw error;
+      }
     }
   }
 
@@ -233,6 +300,7 @@ export class CalendarPlanner {
     const workStart = new Date(today.setHours(parseInt(process.env.WORK_BEGIN || '9'), 0, 0, 0));
     const workEnd = new Date(today.setHours(parseInt(process.env.WORK_END || '17'), 0, 0, 0));
     
+    // Filtere nur die Events für heute
     const todayEvents = this.timeSlots.filter(slot => {
       const eventDate = new Date(slot.start);
       return eventDate.toDateString() === today.toDateString();

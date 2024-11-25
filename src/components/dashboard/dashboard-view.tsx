@@ -19,18 +19,23 @@ import {
 import { StatusMenubar } from '@/components/status-menubar'
 import { Button } from "@/components/ui/button"
 import type { ProgressUpdate } from '@/app/api/dashboard/progress/route'
+import { cn } from "@/lib/utils"
+import { Terminal, FileText, LayoutDashboard, Calendar, CheckSquare, Settings } from "lucide-react"
+import type { LogEntry } from '@/types/logs';
 
 // Hilfsfunktion für konsistente Datumsformatierung
-const formatTime = (date: Date) => {
-  return date.toLocaleTimeString('de-DE', {
+const formatTime = (date: Date | string) => {
+  const dateObj = date instanceof Date ? date : new Date(date);
+  return dateObj.toLocaleTimeString('de-DE', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false
   });
 };
 
-const formatDate = (date: Date) => {
-  return date.toLocaleDateString('de-DE', {
+const formatDate = (date: Date | string) => {
+  const dateObj = date instanceof Date ? date : new Date(date);
+  return dateObj.toLocaleDateString('de-DE', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric'
@@ -173,6 +178,87 @@ function LoadingOverlay({ stats }: { stats: LoadingStats }) {
   )
 }
 
+function Sidebar({ activeTab, onTabChange, isLoading }: { 
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  isLoading: boolean;
+}) {
+  return (
+    <div className="w-40 border-r h-screen flex flex-col">
+      {/* Navigation */}
+      <div className="flex-1">
+        <div className="p-1">
+          <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
+            Navigation
+          </h2>
+          <div className="space-y-0.5">
+            <Button
+              variant={activeTab === "overview" ? "secondary" : "ghost"}
+              className="w-full justify-start h-8 text-sm"
+              onClick={() => onTabChange("overview")}
+            >
+              <LayoutDashboard className="mr-2 h-3 w-3" />
+              Übersicht
+            </Button>
+            <Button
+              variant={activeTab === "calendar" ? "secondary" : "ghost"}
+              className="w-full justify-start h-8 text-sm"
+              onClick={() => onTabChange("calendar")}
+            >
+              <Calendar className="mr-2 h-3 w-3" />
+              Kalender
+            </Button>
+            <Button
+              variant={activeTab === "tasks" ? "secondary" : "ghost"}
+              className="w-full justify-start h-8 text-sm"
+              onClick={() => onTabChange("tasks")}
+            >
+              <CheckSquare className="mr-2 h-3 w-3" />
+              Aufgaben
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Debug Tools */}
+      <div className="border-t p-1">
+        <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
+          Debug
+        </h2>
+        <div className="space-y-0.5">
+          <Button
+            variant={activeTab === "logs" ? "secondary" : "ghost"}
+            className="w-full justify-start h-8 text-sm"
+            onClick={() => onTabChange("logs")}
+          >
+            <Terminal className="mr-2 h-3 w-3" />
+            System Logs
+          </Button>
+          <Button
+            variant={activeTab === "context" ? "secondary" : "ghost"}
+            className="w-full justify-start h-8 text-sm"
+            onClick={() => onTabChange("context")}
+          >
+            <FileText className="mr-2 h-3 w-3" />
+            Kontext
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start h-8 text-sm"
+            disabled
+          >
+            <Settings className={cn(
+              "mr-2 h-3 w-3",
+              isLoading && "animate-spin"
+            )} />
+            Status
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function DashboardView() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +266,9 @@ export function DashboardView() {
   const [loadedTasks, setLoadedTasks] = useState(0);
   const [lastContextUpdate, setLastContextUpdate] = useState<Date | null>(null);
   const [optimizedTasks, setOptimizedTasks] = useState<Record<string, TaskSuggestion>>({});
+  const [activeTab, setActiveTab] = useState("overview");
+  const [context, setContext] = useState<string>('');
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   // Definiere refreshDashboard als useCallback
   const refreshDashboard = useCallback(async () => {
@@ -327,6 +416,24 @@ export function DashboardView() {
     };
   }, [data, optimizedTasks]);
 
+  // Lade Kontext wenn nötig
+  useEffect(() => {
+    if (activeTab === "context") {
+      fetchContext();
+    }
+  }, [activeTab]);
+
+  const fetchContext = async () => {
+    try {
+      const response = await fetch('/api/dashboard/context');
+      const data = await response.json();
+      setContext(data.context);
+    } catch (error) {
+      console.error('Fehler beim Laden des Kontexts:', error);
+      setContext('Fehler beim Laden des Kontexts');
+    }
+  };
+
   // Zeige Fehler an
   if (error) {
     return (
@@ -348,94 +455,133 @@ export function DashboardView() {
     );
   }
 
+  useEffect(() => {
+    const eventSource = new EventSource('/api/logs');
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        // Ignoriere Ping-Nachrichten
+        if (data.type === 'ping') return;
+        
+        setLogs(prev => [...prev, {
+          timestamp: new Date(),
+          message: data.message,
+          emoji: data.emoji
+        }]);
+      } catch (err) {
+        console.error('Log parsing error:', err);
+      }
+    };
+
+    return () => eventSource.close();
+  }, []);
+
   return (
-    <>
-      <StatusMenubar
-        loadedTasks={loadedTasks}
-        lastContextUpdate={lastContextUpdate}
+    <div className="flex h-screen">
+      <Sidebar 
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
         isLoading={isLoading}
-        onRefresh={refreshDashboard}
       />
-      <Tabs defaultValue="tasks" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="overview">Übersicht</TabsTrigger>
-          <TabsTrigger value="calendar">Kalender</TabsTrigger>
-          <TabsTrigger value="tasks">Aufgaben</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="overview">
+      
+      <main className="flex-1 overflow-auto p-4">
+        {/* Übersicht */}
+        <div className={cn(activeTab === "overview" && "block", activeTab !== "overview" && "hidden")}>
           <Card>
-            <CardContent className="pt-6">
-              <div className="space-y-4">
-                <h3 className="text-lg font-medium">Tagesübersicht</h3>
-                <div className="grid gap-4">
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" />
-                    <span>
-                      Verfügbare Zeit heute: {
-                        typeof displayData?.totalFreeHours === 'number' 
-                          ? displayData.totalFreeHours.toFixed(1) 
-                          : '0'
-                      } Stunden
-                    </span>
+            <CardContent className="p-6">
+              <h2 className="text-2xl font-semibold mb-6">Tagesübersicht</h2>
+              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-2">
+                      <Clock className="h-5 w-5 text-blue-500" />
+                      <h3 className="font-medium">Verfügbare Zeit</h3>
+                    </div>
+                    <p className="text-2xl font-bold mt-2">
+                      {displayData?.totalFreeHours.toFixed(1) || '0'} Stunden
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5 text-red-500" />
+                      <h3 className="font-medium">Überfällige Aufgaben</h3>
+                    </div>
+                    <p className="text-2xl font-bold mt-2">
+                      {displayData?.overdueTasks?.length || 0}
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-2">
+                      <Clock className="h-5 w-5 text-green-500" />
+                      <h3 className="font-medium">Heute fällig</h3>
+                    </div>
+                    <p className="text-2xl font-bold mt-2">
+                      {displayData?.dueTodayTasks?.length || 0}
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+        
+        {/* Kalender */}
+        <div className={cn(activeTab === "calendar" && "block", activeTab !== "calendar" && "hidden")}>
+          <Card>
+            <CardContent className="p-6">
+              <h2 className="text-2xl font-semibold mb-6">Kalender</h2>
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-4">Termine heute</h3>
+                  <div className="space-y-2">
+                    {displayData?.events?.map((event, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50">
+                        <span className="font-medium">{event.title}</span>
+                        <span className="text-sm text-muted-foreground">
+                          {formatTime(new Date(event.start))} - {formatTime(new Date(event.end))}
+                        </span>
+                      </div>
+                    ))}
+                    {(!displayData?.events || displayData.events.length === 0) && (
+                      <p className="text-muted-foreground">Keine Termine heute</p>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" />
-                    <span>{displayData?.events?.length || 0} Termine heute</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4" />
-                    <span>
-                      {(displayData?.overdueTasks?.length || 0) + 
-                       (displayData?.dueTodayTasks?.length || 0)} offene Aufgaben
-                    </span>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-medium mb-4">Freie Zeitfenster</h3>
+                  <div className="space-y-2">
+                    {displayData?.freeTimeSlots?.map((slot, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50">
+                        <span className="font-medium">{(slot.duration / 60).toFixed(1)} Stunden frei</span>
+                        <span className="text-sm text-muted-foreground">
+                          {formatTime(new Date(slot.start))} - {formatTime(new Date(slot.end))}
+                        </span>
+                      </div>
+                    ))}
+                    {(!displayData?.freeTimeSlots || displayData.freeTimeSlots.length === 0) && (
+                      <p className="text-muted-foreground">Keine freien Zeitfenster</p>
+                    )}
                   </div>
                 </div>
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="calendar">
+        </div>
+        
+        {/* Aufgaben */}
+        <div className={cn(activeTab === "tasks" && "block", activeTab !== "tasks" && "hidden")}>
           <Card>
-            <CardContent className="pt-6">
-              <div className="space-y-4">
-                <h3 className="text-lg font-medium">Termine heute</h3>
-                <div className="space-y-2">
-                  {displayData?.events?.map((event, i) => (
-                    <div key={i} className="flex items-center justify-between border-b pb-2">
-                      <span>{event.title}</span>
-                      <span className="text-sm text-muted-foreground">
-                        {formatTime(new Date(event.start))} - {formatTime(new Date(event.end))}
-                      </span>
-                    </div>
-                  ))}
-                  {(!displayData?.events || displayData.events.length === 0) && (
-                    <div className="text-sm text-muted-foreground">Keine Termine heute</div>
-                  )}
-                </div>
-                <h3 className="text-lg font-medium mt-6">Freie Zeitfenster</h3>
-                <div className="space-y-2">
-                  {displayData?.freeTimeSlots?.map((slot, i) => (
-                    <div key={i} className="flex items-center justify-between border-b pb-2">
-                      <span>{(slot.duration / 60).toFixed(1)} Stunden frei</span>
-                      <span className="text-sm text-muted-foreground">
-                        {formatTime(new Date(slot.start))} - {formatTime(new Date(slot.end))}
-                      </span>
-                    </div>
-                  ))}
-                  {(!displayData?.freeTimeSlots || displayData.freeTimeSlots.length === 0) && (
-                    <div className="text-sm text-muted-foreground">Keine freien Zeitfenster</div>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="tasks">
-          <Card>
-            <CardContent className="pt-6">
+            <CardContent className="p-6">
+              <h2 className="text-2xl font-semibold mb-6">Aufgaben</h2>
               <div className="space-y-8">
                 {/* Überfällige Aufgaben */}
                 <div>
@@ -452,6 +598,9 @@ export function DashboardView() {
                         isDueToday={false}
                       />
                     ))}
+                    {(!displayData?.overdueTasks || displayData.overdueTasks.length === 0) && (
+                      <p className="text-muted-foreground">Keine überfälligen Aufgaben</p>
+                    )}
                   </div>
                 </div>
 
@@ -470,13 +619,60 @@ export function DashboardView() {
                         isDueToday={true}
                       />
                     ))}
+                    {(!displayData?.dueTodayTasks || displayData.dueTodayTasks.length === 0) && (
+                      <p className="text-muted-foreground">Keine Aufgaben für heute</p>
+                    )}
                   </div>
                 </div>
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
-      </Tabs>
-    </>
+        </div>
+
+        {/* System Logs */}
+        <div className={cn(activeTab === "logs" && "block", activeTab !== "logs" && "hidden")}>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold">System Logs</h2>
+                <div className="text-sm text-muted-foreground">
+                  {logs.length} Einträge
+                </div>
+              </div>
+              <div className="space-y-1">
+                {[...logs].reverse().map((log, index) => (
+                  <div 
+                    key={index} 
+                    className="flex items-start gap-2 py-1 border-b last:border-0 hover:bg-muted/50 rounded px-2"
+                  >
+                    <div className="text-sm text-muted-foreground whitespace-nowrap">
+                      {log.timestamp.toLocaleTimeString()}
+                    </div>
+                    <div className="w-6 text-center flex-shrink-0">
+                      {log.emoji}
+                    </div>
+                    <div className="flex-1 text-sm">
+                      {log.message}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Kontext */}
+        <div className={cn(activeTab === "context" && "block", activeTab !== "context" && "hidden")}>
+          <Card>
+            <CardContent className="p-4">
+              <h2 className="text-xl font-semibold mb-4">Aktueller Kontext</h2>
+              <pre className="whitespace-pre-wrap text-sm font-mono">
+                {context}
+              </pre>
+            </CardContent>
+          </Card>
+        </div>
+      </main>
+    </div>
   )
 } 
