@@ -166,134 +166,119 @@ function LoadingOverlay({ stats }: { stats: LoadingStats }) {
 }
 
 export function DashboardView() {
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [loadedTasks, setLoadedTasks] = useState(0)
-  const [lastContextUpdate, setLastContextUpdate] = useState<Date | null>(null)
-  const [optimizedTasks, setOptimizedTasks] = useState<Record<string, TaskSuggestion>>({})
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadedTasks, setLoadedTasks] = useState(0);
+  const [lastContextUpdate, setLastContextUpdate] = useState<Date | null>(null);
+  const [optimizedTasks, setOptimizedTasks] = useState<Record<string, TaskSuggestion>>({});
 
+  // Definiere refreshDashboard als useCallback
   const refreshDashboard = useCallback(async () => {
     try {
       setIsLoading(true);
-      setError(null);
-
       const response = await fetch('/api/dashboard?force=true');
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const newData = await response.json();
-      if ('error' in newData) {
-        throw new Error(newData.details || 'Unbekannter Fehler');
-      }
-
       setData(newData);
       setLastContextUpdate(new Date());
-      setOptimizedTasks({});
-    } catch (err) {
-      console.error('Refresh Fehler:', err);
-      setError(err instanceof Error ? err.message : 'Ein unerwarteter Fehler ist aufgetreten');
+    } catch (error) {
+      console.error('Refresh Fehler:', error);
+      setError(error instanceof Error ? error.message : 'Unbekannter Fehler');
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    const loadInitialData = async () => {
-      console.log('🔄 Starte initiales Laden...');
-      try {
-        const response = await fetch('/api/dashboard');
-        console.log('📥 Response erhalten:', response.status);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+    let eventSource: EventSource | null = null;
+
+    const setupEventSource = () => {
+      console.log('🔌 Verbinde mit EventSource...');
+      eventSource = new EventSource('/api/dashboard/progress');
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const progress = JSON.parse(event.data);
+          console.log('📨 Progress Update erhalten:', progress);
+          
+          // Initial-Daten mit Kalender und Zeitfenstern
+          if (progress.stage === 'initial_data' && progress.data) {
+            console.log('📝 Setze initiale Daten:', progress.data);
+            setData(progress.data);
+          }
+          
+          // Task-Verarbeitung
+          if (progress.stage === 'processing') {
+            console.log('⚙️ Verarbeite Tasks:', progress.processedTasks);
+            setLoadedTasks(progress.processedTasks || 0);
+          }
+          
+          // Neue optimierte Aufgabe
+          if (progress.optimizedTask) {
+            console.log('✨ Neue optimierte Aufgabe:', progress.optimizedTask);
+            setData(prevData => {
+              if (!prevData) return prevData;
+              
+              // Finde heraus, ob es eine überfällige oder heutige Aufgabe ist
+              const taskId = progress.optimizedTask.id;
+              const newSuggestions = {
+                ...prevData.taskSuggestions,
+                [taskId]: progress.optimizedTask.suggestions
+              };
+
+              // Aktualisiere die Aufgabenlisten
+              return {
+                ...prevData,
+                taskSuggestions: newSuggestions
+              };
+            });
+          }
+
+          // Aktualisiere lastContextUpdate wenn der Kontext aktualisiert wurde
+          if (progress.stage === 'complete') {
+            setLastContextUpdate(new Date());
+          }
+
+        } catch (err) {
+          console.error('❌ Event parsing error:', err);
         }
-        
-        const data = await response.json();
-        console.log('📦 Daten geladen:', {
-          events: data.events?.length,
-          overdueTasks: data.overdueTasks?.length,
-          dueTodayTasks: data.dueTodayTasks?.length
-        });
-        
-        setData(data);
+      };
+
+      eventSource.onerror = (err) => {
+        console.error('❌ EventSource Fehler:', err);
+        eventSource?.close();
+        setTimeout(setupEventSource, 5000);
+      };
+
+      eventSource.onopen = () => {
+        console.log('✅ EventSource Verbindung hergestellt');
+      };
+    };
+
+    // Initial load
+    const loadInitialData = async () => {
+      try {
+        setIsLoading(true);
+        const response = await fetch('/api/dashboard');
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const initialData = await response.json();
+        setData(initialData);
       } catch (error) {
-        console.error('❌ Fehler beim Laden:', error);
+        console.error('Fehler beim initialen Laden:', error);
         setError(error instanceof Error ? error.message : 'Unbekannter Fehler');
+      } finally {
+        setIsLoading(false);
       }
     };
 
     loadInitialData();
-
-    const setupEventSource = () => {
-      console.log('🔌 Versuche EventSource Verbindung...');
-      try {
-        console.log('🔌 Verbinde mit EventSource...');
-        eventSource = new EventSource('/api/dashboard/progress');
-        
-        eventSource.onmessage = (event) => {
-          try {
-            const progress = JSON.parse(event.data);
-            console.log('📨 Progress Update erhalten:', progress);
-            
-            if (progress.stage === 'initial_data' && progress.data) {
-              console.log('📝 Setze initiale Daten:', progress.data);
-              setData(progress.data);
-            }
-            
-            if (progress.stage === 'processing') {
-              console.log('⚙️ Verarbeite Tasks:', progress.processedTasks);
-              setLoadedTasks(progress.processedTasks || 0);
-            }
-            
-            if (progress.optimizedTask) {
-              console.log('✨ Neue optimierte Aufgabe:', progress.optimizedTask.id);
-              setData(prevData => {
-                if (!prevData) {
-                  console.warn('❌ Keine vorherigen Daten vorhanden');
-                  return prevData;
-                }
-                
-                const newData = {
-                  ...prevData,
-                  taskSuggestions: {
-                    ...prevData.taskSuggestions,
-                    [progress.optimizedTask.id]: progress.optimizedTask.suggestions
-                  }
-                };
-                console.log('📊 Aktualisierte Daten:', {
-                  suggestions: Object.keys(newData.taskSuggestions).length
-                });
-                return newData;
-              });
-            }
-          } catch (err) {
-            console.error('❌ Event parsing error:', err);
-          }
-        };
-
-        eventSource.onerror = (err) => {
-          console.error('❌ EventSource Fehler:', err);
-          eventSource?.close();
-          setTimeout(setupEventSource, 5000);
-        };
-
-        eventSource.onopen = () => {
-          console.log('✅ EventSource Verbindung hergestellt');
-        };
-      } catch (err) {
-        console.error('❌ EventSource setup failed:', err);
-      }
-    };
-
-    console.log('🔄 Starte initiales Setup...');
     setupEventSource();
+
     return () => {
-      console.log('🔌 Schließe EventSource');
       eventSource?.close();
     };
-  }, []);
+  }, [refreshDashboard]);
 
   console.log('🎨 Render mit Daten:', {
     hasData: !!data,
