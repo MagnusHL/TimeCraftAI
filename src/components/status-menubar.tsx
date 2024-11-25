@@ -5,7 +5,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from 
 import { Loader2, RefreshCw, Terminal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 
 interface LogEntry {
   timestamp: Date;
@@ -23,15 +23,20 @@ interface StatusMenubarProps {
 export function StatusMenubar({ loadedTasks, lastContextUpdate, isLoading, onRefresh }: StatusMenubarProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const eventSource = new EventSource('/api/logs');
     
     eventSource.onmessage = (event) => {
-      const logEntry = JSON.parse(event.data);
+      const data = JSON.parse(event.data);
+      
+      // Ignoriere Ping-Nachrichten
+      if (data.type === 'ping') return;
+      
       setLogs(prev => [...prev, {
         timestamp: new Date(),
-        ...logEntry
+        ...data
       }].slice(-100)); // Behalte die letzten 100 Logs
     };
 
@@ -53,16 +58,21 @@ export function StatusMenubar({ loadedTasks, lastContextUpdate, isLoading, onRef
             <DrawerTitle>System Logs</DrawerTitle>
           </DrawerHeader>
           <div className="p-4">
-            <ScrollArea className="h-[500px] rounded-md border p-4">
-              {logs.map((log, index) => (
-                <div key={index} className="flex items-start gap-2 py-1 text-sm">
-                  <span className="text-gray-500 min-w-[100px]">
-                    {log.timestamp.toLocaleTimeString()}
-                  </span>
-                  <span className="w-6">{log.emoji}</span>
-                  <span>{log.message}</span>
-                </div>
-              ))}
+            <ScrollArea 
+              className="h-[500px] rounded-md border p-4"
+              ref={scrollAreaRef}
+            >
+              <div className="space-y-1">
+                {[...logs].reverse().map((log, index) => (
+                  <div key={index} className="flex items-start gap-2 py-1 text-sm border-b last:border-0">
+                    <span className="text-gray-500 min-w-[100px]">
+                      {log.timestamp.toLocaleTimeString()}
+                    </span>
+                    <span className="w-6">{log.emoji}</span>
+                    <span>{log.message}</span>
+                  </div>
+                ))}
+              </div>
             </ScrollArea>
           </div>
         </DrawerContent>

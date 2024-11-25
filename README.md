@@ -17,7 +17,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 - [ ] Dokumentation vervollständigen
 - [ ] Deployment Pipeline aufsetzen
 - [ ] Tages Auswahl
-- [ ] 5 Vorschläge für neue Aufgaben Titel
+- [X] 5 Vorschläge für neue Aufgaben Titel
 - [ ] Intelligente Neuverteilung von Aufgaben bei Zeitknappheit - in einem neuen Tab
   - Analyse der verfügbaren Zeit und fälligen Aufgaben
   - Automatische Vorschläge für neue Fälligkeitstermine basierend auf:
@@ -25,13 +25,14 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
     - Bereits geplanten Aufgaben
     - Auslastung der Folgetage
   - Bei Tagesauswahl: Berücksichtigung nur der am gewählten Tag fälligen Aufgaben (ohne Überfällige)
-- [ ] oben rechts einen Knopf einbauen in dem dann in einem popup ähnlichen Fenster der Kontext der openai mitgegeben wird zur kontrolle angezeigt wird
-- [ ] kein regelmäßiger Refresh der Änderungsvorschläge, nur bei Tageswechsel oder auf Knopfdruck oben rechts und beim starten der app
-- [ ] der Kontext für openai, also alle AUfgaben und Projekte werden im Hintergrund alle 5 Minuten aktualisiert und zwischen gespeichert. So dass die Oberfläche nicht so hängt. oben rechts in einer Leiste (npx shadcn@latest add menubar
+- [X] oben rechts einen Knopf einbauen in dem dann in einem popup ähnlichen Fenster der Kontext der openai mitgegeben wird zur kontrolle angezeigt wird
+- [o] kein regelmäßiger Refresh der Änderungsvorschläge, nur bei Tageswechsel oder auf Knopfdruck oben rechts und beim starten der app
+- [o] der Kontext für openai, also alle AUfgaben und Projekte werden im Hintergrund alle 5 Minuten aktualisiert und zwischen gespeichert. So dass die Oberfläche nicht so hängt. oben rechts in einer Leiste (npx shadcn@latest add menubar
 ) wird dann der Status angezeigt.
-- [ ] Ladevorgang optimieren, Anzahl geladene Aufgaben hochzählen und zwar oben rechts in einer Leiste in der Menüzeile. So dass die UI schon sichtbar ist
-- [ ] lade erst den Kalender und berechne die Zeit etc. bevor du Todoist Kontext und aufgaben lädst, so dass die UI schon sichtbar ist.
-- [ ] Scroll Area im npx shadcn@latest add drawer der logausgabe sollten immer unten sein, also mitlaufen.
+- [X] Ladevorgang optimieren, Anzahl geladene Aufgaben hochzählen und zwar oben rechts in einer Leiste in der Menüzeile. So dass die UI schon sichtbar ist
+- [X] lade erst den Kalender und berechne die Zeit etc. bevor du Todoist Kontext und aufgaben lädst, so dass die UI schon sichtbar ist.
+- [X] Scroll Area im npx shadcn@latest add drawer der logausgabe sollten immer unten sein, also mitlaufen.
+- [ ] Vorschlag übernehmen und im Todoist aktualisieren
 
 
 ## Getting Started

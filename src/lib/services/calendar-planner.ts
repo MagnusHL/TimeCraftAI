@@ -414,65 +414,49 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
     const freeTimeSlots = this.findFreeTimeSlots();
     const totalFreeHours = freeTimeSlots.reduce((acc, slot) => acc + slot.duration / 60, 0);
     
-    // Erste Teillieferung der Daten
+    // Lade aktuelle Tasks
+    emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
+    const { overdue, dueToday } = await this.loadTodoistTasks();
+    
+    // Sende die initialen Daten sofort
     const initialData: DashboardData = {
       timestamp: new Date().toISOString(),
       freeTimeSlots,
       totalFreeHours,
-      overdueTasks: [],
-      dueTodayTasks: [],
+      overdueTasks: overdue,
+      dueTodayTasks: dueToday,
       events: this.getTimeSlots(),
-      taskSuggestions: {},
-      lastContextUpdate: null,
-      loadedTasksCount: 0
+      taskSuggestions: this.taskSuggestionsCache,
+      lastContextUpdate: new Date(this.lastContextUpdate),
+      loadedTasksCount: this.todoistTasks.length
     };
 
-    // Sende erste Daten
-    emitProgress({ 
-      stage: 'initial_data', 
+    // Sende die initialen Daten ans Frontend
+    emitProgress({
+      stage: 'initial_data',
       data: initialData,
-      currentTask: 'Kalender und Zeitfenster geladen'
-    });
-    
-    // Dann Todoist
-    emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
-    const { overdue, dueToday } = await this.loadTodoistTasks();
-    
-    // Aktualisiere die UI mit den geladenen Tasks
-    emitProgress({ 
-      stage: 'processing',
       taskCount: overdue.length + dueToday.length,
-      processedTasks: 0,
-      data: {
-        ...initialData,
-        overdueTasks: overdue,
-        dueTodayTasks: dueToday
-      }
+      processedTasks: 0
     });
     
-    // Verwende den Cache für die Suggestions
-    let taskSuggestions = this.taskSuggestionsCache;
-    if (forceUpdate) {
-      emitLog({ message: 'Erzwinge neue Optimierungen...', emoji: '🤖' });
-      this.taskSuggestionsCache = {}; // Cache leeren bei Force Update
-      taskSuggestions = await this.suggestOptimizations();
-    } else if (Object.keys(this.taskSuggestionsCache).length === 0) {
-      emitLog({ message: 'Generiere erste Optimierungen...', emoji: '🤖' });
-      taskSuggestions = await this.suggestOptimizations();
+    // Aktualisiere nur den Kontext, nicht die Optimierungen
+    await this.updateTaskContext();
+    
+    // Optimiere nur beim ersten Start oder bei Force-Update
+    if (forceUpdate || Object.keys(this.taskSuggestionsCache).length === 0) {
+      emitLog({ message: forceUpdate ? 'Erzwinge neue Optimierungen...' : 'Erste Optimierung...', emoji: '🤖' });
+      await this.suggestOptimizations();
+      this.lastSuggestionsUpdate = new Date();
     } else {
-      emitLog({ message: 'Verwende gespeicherte Optimierungen', emoji: 'ℹ️' });
+      emitLog({ message: 'Verwende bestehende Optimierungen', emoji: 'ℹ️' });
     }
     
     emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
     
-    // Vollständige Daten
+    // Sende die finalen Daten
     return {
       ...initialData,
-      overdueTasks: overdue,
-      dueTodayTasks: dueToday,
-      taskSuggestions,
-      lastContextUpdate: new Date(this.lastContextUpdate),
-      loadedTasksCount: this.todoistTasks.length
+      taskSuggestions: this.taskSuggestionsCache
     };
   }
 } 
