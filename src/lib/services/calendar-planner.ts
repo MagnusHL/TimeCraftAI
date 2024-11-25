@@ -316,14 +316,14 @@ export class CalendarPlanner {
         .join('\n');
       
       this.lastContextUpdate = now;
-      emitLog({ message: 'Kontext-Update abgeschlossen', emoji: '✅' });
+      emitLog({ message: `Kontext-Update abgeschlossen um ${new Date(now).toLocaleTimeString()}`, emoji: '✅' });
       emitProgress({ 
         stage: 'complete', 
         taskCount: this.todoistTasks.length,
         processedTasks: this.todoistTasks.length
       });
     } else {
-      emitLog({ message: 'Kontext ist noch aktuell, überspringe Update', emoji: 'ℹ️' });
+      emitLog({ message: `Letztes Kontext-Update war um ${new Date(this.lastContextUpdate).toLocaleTimeString()}`, emoji: 'ℹ️' });
     }
   }
 
@@ -483,6 +483,9 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
     const freeTimeSlots = this.findFreeTimeSlots();
     const totalFreeHours = freeTimeSlots.reduce((acc, slot) => acc + slot.duration / 60, 0);
     
+    // Aktualisiere den Kontext
+    await this.updateTaskContext();
+    
     // Lade aktuelle Tasks
     emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
     const { overdue, dueToday } = await this.loadTodoistTasks();
@@ -493,11 +496,6 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       task => !this.taskSuggestionsCache[task.id]
     );
 
-    emitLog({ 
-      message: `Cache Status: ${allRelevantTasks.length} relevante Tasks, ${unoptimizedTasks.length} nicht optimiert`, 
-      emoji: '📊' 
-    });
-    
     // Sende die initialen Daten sofort
     const initialData: DashboardData = {
       timestamp: new Date().toISOString(),
@@ -519,9 +517,6 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       processedTasks: 0
     });
     
-    // Aktualisiere den Kontext
-    await this.updateTaskContext();
-    
     // Optimiere wenn nötig
     if (forceUpdate || unoptimizedTasks.length > 0) {
       emitLog({ 
@@ -538,9 +533,10 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
     
     emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
     
-    // Sende die finalen Daten
+    // Sende die finalen Daten mit aktuellem Kontext-Update-Zeitstempel
     return {
       ...initialData,
+      lastContextUpdate: new Date(this.lastContextUpdate),
       taskSuggestions: this.taskSuggestionsCache
     };
   }

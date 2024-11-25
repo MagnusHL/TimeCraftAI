@@ -213,20 +213,22 @@ export function DashboardView() {
           // Initial-Daten oder Task-Updates
           if ((progress.stage === 'initial_data' || progress.stage === 'processing') && progress.data) {
             console.log('📝 Setze Daten:', progress.data);
-            setData(prevData => ({
-              ...prevData,
-              ...progress.data,
-              taskSuggestions: {
-                ...(prevData?.taskSuggestions || {}),
-                ...(progress.data.taskSuggestions || {})
-              }
-            }));
+            setData(progress.data);
+            // Aktualisiere lastContextUpdate wenn vorhanden
+            if (progress.data.lastContextUpdate) {
+              setLastContextUpdate(new Date(progress.data.lastContextUpdate));
+            }
           }
           
           // Task-Verarbeitung
           if (progress.stage === 'processing') {
             console.log('⚙️ Verarbeite Tasks:', progress.processedTasks);
             setLoadedTasks(progress.processedTasks || 0);
+          }
+
+          // Kontext-Update abgeschlossen
+          if (progress.stage === 'complete') {
+            setLastContextUpdate(new Date());
           }
           
           // Neue optimierte Aufgabe
