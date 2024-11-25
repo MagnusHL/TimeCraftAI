@@ -132,6 +132,43 @@ export class CalendarPlanner {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
+      emitLog({ message: `Lade ${tasks.length} Todoist Tasks...`, emoji: '📝' });
+      
+      const overdue: TodoistTask[] = [];
+      const dueToday: TodoistTask[] = [];
+
+      for (const task of tasks) {
+        if (task.due) {
+          const dueDate = new Date(task.due.date);
+          dueDate.setHours(0, 0, 0, 0);
+          
+          const mappedTask = {
+            id: task.id,
+            content: task.content,
+            due: {
+              date: task.due.date,
+              datetime: task.due.datetime
+            },
+            priority: task.priority,
+            projectId: task.projectId
+          };
+
+          if (dueDate < today) {
+            emitLog({ message: `Überfällige Aufgabe gefunden: ${task.content}`, emoji: '⏰' });
+            overdue.push(mappedTask);
+          } else if (dueDate.getTime() === today.getTime()) {
+            emitLog({ message: `Heute fällige Aufgabe gefunden: ${task.content}`, emoji: '📅' });
+            dueToday.push(mappedTask);
+          }
+        }
+      }
+
+      emitLog({ 
+        message: `Gefunden: ${overdue.length} überfällige, ${dueToday.length} heute fällige Tasks`, 
+        emoji: '✓' 
+      });
+
+      // Speichere alle Tasks für den Kontext
       this.todoistTasks = tasks.map(task => ({
         id: task.id,
         content: task.content,
@@ -142,20 +179,6 @@ export class CalendarPlanner {
         priority: task.priority,
         projectId: task.projectId
       }));
-
-      const { overdue, dueToday } = this.todoistTasks.reduce((acc, task) => {
-        if (!task.due) return acc;
-        const dueDate = new Date(task.due.date);
-        dueDate.setHours(0, 0, 0, 0);
-        
-        if (dueDate.getTime() < today.getTime()) {
-          acc.overdue.push(task);
-        } else if (dueDate.getTime() === today.getTime()) {
-          acc.dueToday.push(task);
-        }
-        
-        return acc;
-      }, { overdue: [] as TodoistTask[], dueToday: [] as TodoistTask[] });
 
       return { overdue, dueToday };
     } catch (error) {
@@ -276,55 +299,53 @@ export class CalendarPlanner {
       const task = allRelevantTasks[i];
       emitLog({ message: `Optimiere Task ${i + 1}/${allRelevantTasks.length}: ${task.content}`, emoji: '🔄' });
       
-      const fullPrompt = `
-${process.env.OPENAI_TASK_PROMPT}
+      try {
+        const systemPrompt = `Du bist ein Experte für die Optimierung von Aufgabenbeschreibungen. 
+Antworte ausschließlich im JSON-Format mit einem optimierten Titel und einer Begründung.`;
 
-Zu optimierende Aufgabe:
-"${task.content}"
+        const userPrompt = `Analysiere diese Aufgabe und erstelle ein JSON mit Vorschlägen zur Optimierung:
 
-Kontext - Alle meine anderen Aufgaben (für Zusammenhänge und Verständnis):
+Aktuelle Aufgabe: "${task.content}"
+
+Kontext - Andere Aufgaben:
 ${this.allTasksContext}
 
-Schlage 5 verschiedene Optimierungen vor. Antworte NUR im folgenden JSON-Format:
-{
-  "suggestions": [
-    {
-      "newTitle": "Erste Optimierung",
-      "reason": "Begründung für die erste Optimierung",
-      "estimatedDuration": 30
-    },
-    // ... 4 weitere Vorschläge
-  ]
-}`;
+Erstelle ein JSON-Objekt mit 'suggestions' Array, das 5 verschiedene Vorschläge enthält.
+Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
 
-      const completion = await this.openai.chat.completions.create({
-        messages: [{ 
-          role: "system", 
-          content: process.env.OPENAI_SYSTEM_PROMPT
-        }, { 
-          role: "user", 
-          content: fullPrompt 
-        }],
-        model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
-        temperature: 0.8,
-        max_tokens: 500,
-        response_format: { type: "json_object" }
-      });
+        const completion = await this.openai.chat.completions.create({
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
+          temperature: 0.7,
+          max_tokens: 500,
+          response_format: { type: "json_object" }
+        });
 
-      const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
-      suggestions[task.id] = suggestion;
-      
-      emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✓' });
-      emitProgress({ 
-        stage: 'optimizing',
-        taskCount: allRelevantTasks.length,
-        processedTasks: i + 1,
-        currentTask: task.content,
-        optimizedTask: {
-          id: task.id,
-          suggestions: suggestion
-        }
-      });
+        const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
+        suggestions[task.id] = suggestion;
+        
+        emitProgress({ 
+          stage: 'optimizing',
+          taskCount: allRelevantTasks.length,
+          processedTasks: i + 1,
+          currentTask: task.content,
+          optimizedTask: {
+            id: task.id,
+            suggestions: suggestion
+          }
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✓' });
+      } catch (error) {
+        console.error(`Fehler bei Task "${task.content}":`, error);
+        emitLog({ message: `Fehler bei Task "${task.content}"`, emoji: '❌' });
+        continue;
+      }
     }
 
     return suggestions;
@@ -408,6 +429,18 @@ Schlage 5 verschiedene Optimierungen vor. Antworte NUR im folgenden JSON-Format:
     // Dann Todoist
     emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
     const { overdue, dueToday } = await this.loadTodoistTasks();
+    
+    // Aktualisiere die UI mit den geladenen Tasks
+    emitProgress({ 
+      stage: 'processing',
+      taskCount: overdue.length + dueToday.length,
+      processedTasks: 0,
+      data: {
+        ...initialData,
+        overdueTasks: overdue,
+        dueTodayTasks: dueToday
+      }
+    });
     
     // Dann Optimierungen
     let taskSuggestions = {};

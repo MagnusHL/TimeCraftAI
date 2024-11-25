@@ -45,7 +45,7 @@ function TaskCard({ task, suggestions, isDueToday }: {
       reason: string;
       estimatedDuration: number;
     }> 
-  }, 
+  } | undefined,
   isDueToday: boolean 
 }) {
   return (
@@ -53,14 +53,17 @@ function TaskCard({ task, suggestions, isDueToday }: {
       <AccordionItem value="task" className="border-none">
         <AccordionTrigger className="px-4 py-3 hover:no-underline">
           <div className="flex justify-between items-center w-full">
-            <span className="font-medium text-left">{task.content}</span>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-left">{task.content}</span>
+              {!suggestions && <Loader2 className="h-4 w-4 animate-spin" />}
+            </div>
             <Badge variant={isDueToday ? "default" : "destructive"} className="ml-2">
               {isDueToday ? "Heute fällig" : "Überfällig"}
             </Badge>
           </div>
         </AccordionTrigger>
         <AccordionContent className="px-4 pb-4">
-          {suggestions && (
+          {suggestions ? (
             <Accordion type="single" collapsible className="w-full">
               {suggestions.suggestions.map((suggestion, index) => (
                 <AccordionItem key={index} value={`suggestion-${index}`} className="border-b">
@@ -79,6 +82,11 @@ function TaskCard({ task, suggestions, isDueToday }: {
                 </AccordionItem>
               ))}
             </Accordion>
+          ) : (
+            <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Optimiere Aufgabe...</span>
+            </div>
           )}
         </AccordionContent>
       </AccordionItem>
@@ -202,10 +210,17 @@ export function DashboardView() {
           const progress = JSON.parse(event.data);
           console.log('📨 Progress Update erhalten:', progress);
           
-          // Initial-Daten mit Kalender und Zeitfenstern
-          if (progress.stage === 'initial_data' && progress.data) {
-            console.log('📝 Setze initiale Daten:', progress.data);
-            setData(progress.data);
+          // Initial-Daten oder Task-Updates
+          if ((progress.stage === 'initial_data' || progress.stage === 'processing') && progress.data) {
+            console.log('📝 Setze Daten:', progress.data);
+            setData(prevData => ({
+              ...prevData,
+              ...progress.data,
+              taskSuggestions: {
+                ...(prevData?.taskSuggestions || {}),
+                ...(progress.data.taskSuggestions || {})
+              }
+            }));
           }
           
           // Task-Verarbeitung
@@ -220,26 +235,15 @@ export function DashboardView() {
             setData(prevData => {
               if (!prevData) return prevData;
               
-              // Finde heraus, ob es eine überfällige oder heutige Aufgabe ist
-              const taskId = progress.optimizedTask.id;
-              const newSuggestions = {
-                ...prevData.taskSuggestions,
-                [taskId]: progress.optimizedTask.suggestions
-              };
-
-              // Aktualisiere die Aufgabenlisten
               return {
                 ...prevData,
-                taskSuggestions: newSuggestions
+                taskSuggestions: {
+                  ...prevData.taskSuggestions,
+                  [progress.optimizedTask.id]: progress.optimizedTask.suggestions
+                }
               };
             });
           }
-
-          // Aktualisiere lastContextUpdate wenn der Kontext aktualisiert wurde
-          if (progress.stage === 'complete') {
-            setLastContextUpdate(new Date());
-          }
-
         } catch (err) {
           console.error('❌ Event parsing error:', err);
         }
@@ -260,9 +264,11 @@ export function DashboardView() {
     const loadInitialData = async () => {
       try {
         setIsLoading(true);
+        console.log('🔄 Lade initiale Daten...');
         const response = await fetch('/api/dashboard');
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const initialData = await response.json();
+        console.log('📥 Initiale Daten geladen:', initialData);
         setData(initialData);
       } catch (error) {
         console.error('Fehler beim initialen Laden:', error);
@@ -278,7 +284,26 @@ export function DashboardView() {
     return () => {
       eventSource?.close();
     };
-  }, [refreshDashboard]);
+  }, []);
+
+  // Debug-Log für den aktuellen Zustand
+  useEffect(() => {
+    if (data) {
+      console.log('📊 Aktueller Datenstand:', {
+        overdueTasks: data.overdueTasks?.length || 0,
+        dueTodayTasks: data.dueTodayTasks?.length || 0,
+        suggestions: Object.keys(data.taskSuggestions || {}).length,
+        tasks: [
+          ...(data.overdueTasks || []),
+          ...(data.dueTodayTasks || [])
+        ].map(t => ({
+          id: t.id,
+          content: t.content,
+          hasSuggestions: !!(data.taskSuggestions || {})[t.id]
+        }))
+      });
+    }
+  }, [data]);
 
   console.log('🎨 Render mit Daten:', {
     hasData: !!data,
@@ -425,9 +450,6 @@ export function DashboardView() {
                         isDueToday={false}
                       />
                     ))}
-                    {(!displayData?.overdueTasks || displayData.overdueTasks.length === 0) && (
-                      <div className="text-sm text-muted-foreground">Keine überfälligen Aufgaben</div>
-                    )}
                   </div>
                 </div>
 
@@ -446,9 +468,6 @@ export function DashboardView() {
                         isDueToday={true}
                       />
                     ))}
-                    {(!displayData?.dueTodayTasks || displayData.dueTodayTasks.length === 0) && (
-                      <div className="text-sm text-muted-foreground">Keine Aufgaben für heute</div>
-                    )}
                   </div>
                 </div>
               </div>
