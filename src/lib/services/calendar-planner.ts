@@ -6,6 +6,8 @@ import "isomorphic-fetch";
 import { Event } from "@microsoft/microsoft-graph-types";
 import { emitProgress } from '@/app/api/dashboard/progress/route'
 import { emitLog } from '@/app/api/logs/route'
+import fs from 'fs/promises';
+import path from 'path';
 
 export interface TimeSlot {
   start: Date;
@@ -56,12 +58,50 @@ export class CalendarPlanner {
   private openai: OpenAI;
   private lastSuggestionsUpdate: Date | null = null;
   private taskSuggestionsCache: Record<string, TaskSuggestion> = {};
+  private readonly CACHE_FILE = path.join(process.cwd(), 'data', 'suggestions-cache.json');
   
   constructor() {
     this.todoistApi = new TodoistApi(process.env.TODOIST_API_TOKEN || '');
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
+    this.loadCacheFromDisk().catch(console.error);
+  }
+
+  private async loadCacheFromDisk() {
+    try {
+      // Stelle sicher, dass das Verzeichnis existiert
+      await fs.mkdir(path.join(process.cwd(), 'data'), { recursive: true });
+      
+      const cacheExists = await fs.access(this.CACHE_FILE)
+        .then(() => true)
+        .catch(() => false);
+
+      if (cacheExists) {
+        const cacheData = await fs.readFile(this.CACHE_FILE, 'utf-8');
+        this.taskSuggestionsCache = JSON.parse(cacheData);
+        emitLog({ message: `Cache geladen: ${Object.keys(this.taskSuggestionsCache).length} Optimierungen`, emoji: '💾' });
+      } else {
+        emitLog({ message: 'Kein Cache gefunden, starte mit leerem Cache', emoji: '🆕' });
+      }
+    } catch (error) {
+      console.error('Fehler beim Laden des Caches:', error);
+      emitLog({ message: 'Fehler beim Laden des Caches', emoji: '❌' });
+    }
+  }
+
+  private async saveCacheToDisk() {
+    try {
+      await fs.writeFile(
+        this.CACHE_FILE,
+        JSON.stringify(this.taskSuggestionsCache, null, 2),
+        'utf-8'
+      );
+      emitLog({ message: 'Cache gespeichert', emoji: '💾' });
+    } catch (error) {
+      console.error('Fehler beim Speichern des Caches:', error);
+      emitLog({ message: 'Fehler beim Speichern des Caches', emoji: '❌' });
+    }
   }
 
   public async initialize() {
@@ -294,24 +334,44 @@ export class CalendarPlanner {
     const { overdue, dueToday } = await this.loadTodoistTasks();
     const allRelevantTasks = [...overdue, ...dueToday];
     
-    const unoptimizedTasks = allRelevantTasks.filter(
-      task => !this.taskSuggestionsCache[task.id]
-    );
+    // Prüfe Cache-Vollständigkeit
+    const cachedTaskIds = new Set(Object.keys(this.taskSuggestionsCache));
+    const relevantTaskIds = new Set(allRelevantTasks.map(task => task.id));
+    
+    // Finde Tasks die im Cache fehlen
+    const missingTasks = allRelevantTasks.filter(task => !cachedTaskIds.has(task.id));
+    // Finde verwaiste Cache-Einträge (optional: Aufräumen)
+    const orphanedCacheEntries = [...cachedTaskIds].filter(id => !relevantTaskIds.has(id));
 
     emitLog({ 
-      message: `${unoptimizedTasks.length} neue Tasks zu optimieren`, 
-      emoji: '📝' 
+      message: `Cache Status:
+      - ${cachedTaskIds.size} Tasks im Cache
+      - ${missingTasks.length} Tasks fehlen
+      - ${orphanedCacheEntries.length} verwaiste Cache-Einträge`, 
+      emoji: '📊' 
+    });
+
+    // Entferne verwaiste Cache-Einträge
+    orphanedCacheEntries.forEach(id => {
+      delete this.taskSuggestionsCache[id];
     });
     
-    for (let i = 0; i < unoptimizedTasks.length; i++) {
-      const task = unoptimizedTasks[i];
-      emitLog({ message: `Optimiere Task ${i + 1}/${unoptimizedTasks.length}: ${task.content}`, emoji: '🔄' });
+    if (missingTasks.length > 0) {
+      emitLog({ 
+        message: `Optimiere ${missingTasks.length} fehlende Tasks...`, 
+        emoji: '🔄' 
+      });
       
-      try {
-        const systemPrompt = `Du bist ein Experte für die Optimierung von Aufgabenbeschreibungen. 
+      // Optimiere nur die fehlenden Tasks
+      for (let i = 0; i < missingTasks.length; i++) {
+        const task = missingTasks[i];
+        emitLog({ message: `Optimiere Task ${i + 1}/${missingTasks.length}: ${task.content}`, emoji: '🔄' });
+        
+        try {
+          const systemPrompt = `Du bist ein Experte für die Optimierung von Aufgabenbeschreibungen. 
 Antworte ausschließlich im JSON-Format mit einem optimierten Titel und einer Begründung.`;
 
-        const userPrompt = `Analysiere diese Aufgabe und erstelle ein JSON mit Vorschlägen zur Optimierung:
+          const userPrompt = `Analysiere diese Aufgabe und erstelle ein JSON mit Vorschlägen zur Optimierung:
 
 Aktuelle Aufgabe: "${task.content}"
 
@@ -321,41 +381,50 @@ ${this.allTasksContext}
 Erstelle ein JSON-Objekt mit 'suggestions' Array, das 5 verschiedene Vorschläge enthält.
 Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
 
-        const completion = await this.openai.chat.completions.create({
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt }
-          ],
-          model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
-          temperature: 0.7,
-          max_tokens: 500,
-          response_format: { type: "json_object" }
-        });
+          const completion = await this.openai.chat.completions.create({
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt }
+            ],
+            model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
+            temperature: 0.7,
+            max_tokens: 500,
+            response_format: { type: "json_object" }
+          });
 
-        const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
-        this.taskSuggestionsCache[task.id] = suggestion;
-        
-        emitProgress({ 
-          stage: 'optimizing',
-          taskCount: unoptimizedTasks.length,
-          processedTasks: i + 1,
-          currentTask: task.content,
-          optimizedTask: {
-            id: task.id,
-            suggestions: suggestion
-          }
-        });
+          const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
+          this.taskSuggestionsCache[task.id] = suggestion;
+          
+          // Speichere nach jeder neuen Optimierung
+          await this.saveCacheToDisk();
+          
+          emitProgress({ 
+            stage: 'optimizing',
+            taskCount: missingTasks.length,
+            processedTasks: i + 1,
+            currentTask: task.content,
+            optimizedTask: {
+              id: task.id,
+              suggestions: suggestion
+            }
+          });
 
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✓' });
-      } catch (error) {
-        console.error(`Fehler bei Task "${task.content}":`, error);
-        emitLog({ message: `Fehler bei Task "${task.content}"`, emoji: '❌' });
-        continue;
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✓' });
+        } catch (error) {
+          console.error(`Fehler bei Task "${task.content}":`, error);
+          emitLog({ message: `Fehler bei Task "${task.content}"`, emoji: '❌' });
+          continue;
+        }
       }
+    } else {
+      emitLog({ message: 'Alle relevanten Tasks sind bereits optimiert', emoji: '✅' });
     }
 
+    // Speichere finalen Cache-Zustand
+    await this.saveCacheToDisk();
+    
     return this.taskSuggestionsCache;
   }
 
@@ -418,6 +487,17 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
     emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
     const { overdue, dueToday } = await this.loadTodoistTasks();
     
+    // Prüfe, ob alle relevanten Tasks optimiert sind
+    const allRelevantTasks = [...overdue, ...dueToday];
+    const unoptimizedTasks = allRelevantTasks.filter(
+      task => !this.taskSuggestionsCache[task.id]
+    );
+
+    emitLog({ 
+      message: `Cache Status: ${allRelevantTasks.length} relevante Tasks, ${unoptimizedTasks.length} nicht optimiert`, 
+      emoji: '📊' 
+    });
+    
     // Sende die initialen Daten sofort
     const initialData: DashboardData = {
       timestamp: new Date().toISOString(),
@@ -439,16 +519,21 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       processedTasks: 0
     });
     
-    // Aktualisiere nur den Kontext, nicht die Optimierungen
+    // Aktualisiere den Kontext
     await this.updateTaskContext();
     
-    // Optimiere nur beim ersten Start oder bei Force-Update
-    if (forceUpdate || Object.keys(this.taskSuggestionsCache).length === 0) {
-      emitLog({ message: forceUpdate ? 'Erzwinge neue Optimierungen...' : 'Erste Optimierung...', emoji: '🤖' });
+    // Optimiere wenn nötig
+    if (forceUpdate || unoptimizedTasks.length > 0) {
+      emitLog({ 
+        message: forceUpdate 
+          ? 'Erzwinge neue Optimierungen...' 
+          : `Optimiere ${unoptimizedTasks.length} fehlende Tasks...`, 
+        emoji: '🤖' 
+      });
       await this.suggestOptimizations();
       this.lastSuggestionsUpdate = new Date();
     } else {
-      emitLog({ message: 'Verwende bestehende Optimierungen', emoji: 'ℹ️' });
+      emitLog({ message: 'Alle Tasks sind bereits optimiert', emoji: '✅' });
     }
     
     emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
