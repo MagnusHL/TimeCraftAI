@@ -1,26 +1,47 @@
 import { CalendarPlanner } from '@/lib/services/calendar-planner'
 import { NextResponse } from 'next/server'
+import { emitProgress } from './progress/route'
 
-export async function GET() {
+export async function GET(request: Request) {
+  console.log('=== Dashboard API Start ===');
   try {
-    const planner = new CalendarPlanner()
-    await planner.initialize()
+    console.log('🚀 Dashboard API aufgerufen');
+    const url = new URL(request.url);
+    console.log('URL:', url.toString());
+    console.log('SearchParams:', Object.fromEntries(url.searchParams));
+
+    emitProgress({ stage: 'init' });
     
-    console.log('Todoist Token:', process.env.TODOIST_API_TOKEN?.slice(0, 5) + '...');
-    console.log('Project ID:', process.env.PRIVATE_TODOIST_PROJECT);
+    const planner = new CalendarPlanner();
+    console.log('📅 CalendarPlanner initialisiert');
     
-    const dashboardData = await planner.getDashboardData()
-    console.log('Dashboard Data:', {
-      taskCount: dashboardData.overdueTasks.length,
-      eventCount: dashboardData.events.length
+    await planner.initialize();
+    console.log('🔑 MS Graph initialisiert');
+    
+    const searchParams = new URL(request.url).searchParams;
+    const forceUpdate = searchParams.get('force') === 'true';
+    console.log(`🔄 Force Update: ${forceUpdate}`);
+    
+    console.log('📊 Lade Dashboard Daten...');
+    const dashboardData = await planner.getDashboardData(forceUpdate);
+    console.log('✅ Dashboard Daten geladen:', {
+      events: dashboardData.events.length,
+      overdueTasks: dashboardData.overdueTasks.length,
+      dueTodayTasks: dashboardData.dueTodayTasks.length,
+      suggestions: Object.keys(dashboardData.taskSuggestions).length
     });
     
-    return NextResponse.json(dashboardData)
+    emitProgress({ stage: 'complete' });
+    return NextResponse.json(dashboardData);
   } catch (error) {
-    console.error('Dashboard API Error:', error)
+    console.error('❌ Dashboard API Error:', error);
+    emitProgress({ 
+      stage: 'error', 
+      currentTask: error instanceof Error ? error.message : 'Unknown error' 
+    });
     return NextResponse.json({ 
       error: 'Internal Server Error',
       details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 })
+    }, { status: 500 });
   }
 } 

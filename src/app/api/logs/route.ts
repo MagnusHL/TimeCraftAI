@@ -1,42 +1,29 @@
 import { NextResponse } from 'next/server'
 import { EventEmitter } from 'events'
-import type { TaskSuggestion } from '@/lib/services/calendar-planner';
 
-const progressEmitter = new EventEmitter()
+const logEmitter = new EventEmitter()
 const encoder = new TextEncoder()
 const controllers = new Map<string, ReadableStreamDefaultController>()
 
-progressEmitter.setMaxListeners(100)
+logEmitter.setMaxListeners(100)
 
-export interface ProgressUpdate {
-  stage: string;
-  taskCount?: number;
-  processedTasks?: number;
-  currentTask?: string;
-  data?: any;
-  optimizedTask?: {
-    id: string;
-    suggestions: TaskSuggestion;
-  };
-}
-
-export function emitProgress(progress: ProgressUpdate) {
+export function emitLog(log: { message: string; emoji?: string }) {
   try {
     for (const [id, controller] of controllers.entries()) {
       try {
         if (controller.desiredSize !== null) {
-          const message = `data: ${JSON.stringify(progress)}\n\n`
+          const message = `data: ${JSON.stringify(log)}\n\n`
           controller.enqueue(encoder.encode(message))
         } else {
           controllers.delete(id)
         }
       } catch (error) {
-        console.error('Failed to send progress:', error)
+        console.error('Failed to send log:', error)
         controllers.delete(id)
       }
     }
   } catch (error) {
-    console.error('Progress emit error:', error)
+    console.error('Log emit error:', error)
   }
 }
 

@@ -4,15 +4,17 @@ import { ConfidentialClientApplication } from "@azure/msal-node";
 import OpenAI from 'openai';
 import "isomorphic-fetch";
 import { Event } from "@microsoft/microsoft-graph-types";
+import { emitProgress } from '@/app/api/dashboard/progress/route'
+import { emitLog } from '@/app/api/logs/route'
 
-interface TimeSlot {
+export interface TimeSlot {
   start: Date;
   end: Date;
   title: string;
   duration: number;
 }
 
-interface TodoistTask {
+export interface TodoistTask {
   id: string;
   content: string;
   due?: {
@@ -23,10 +25,12 @@ interface TodoistTask {
   projectId: string;
 }
 
-interface TaskSuggestion {
-  newTitle: string;
-  reason: string;
-  estimatedDuration: number;
+export interface TaskSuggestion {
+  suggestions: Array<{
+    newTitle: string;
+    reason: string;
+    estimatedDuration: number;
+  }>;
 }
 
 export interface DashboardData {
@@ -37,6 +41,8 @@ export interface DashboardData {
   dueTodayTasks: TodoistTask[];
   events: TimeSlot[];
   taskSuggestions: Record<string, TaskSuggestion>;
+  lastContextUpdate: Date | null;
+  loadedTasksCount: number;
 }
 
 export class CalendarPlanner {
@@ -48,6 +54,7 @@ export class CalendarPlanner {
   private msGraphClient: Client | null = null;
   private todoistApi: TodoistApi;
   private openai: OpenAI;
+  private lastSuggestionsUpdate: Date | null = null;
   
   constructor() {
     this.todoistApi = new TodoistApi(process.env.TODOIST_API_TOKEN || '');
@@ -199,39 +206,76 @@ export class CalendarPlanner {
   private async updateTaskContext() {
     const now = Date.now();
     if (now - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
-      const tasks = await this.todoistApi.getTasks();
-      this.todoistTasks = tasks.map(task => ({
-        id: task.id,
-        content: task.content,
-        due: task.due ? {
-          date: task.due.date,
-          datetime: task.due.datetime
-        } : null,
-        priority: task.priority,
-        projectId: task.projectId
-      }));
+      emitLog({ message: 'Starte Kontext-Update...', emoji: '🔄' });
+      emitProgress({ stage: 'loading', taskCount: 0 });
       
+      emitLog({ message: 'Lade Todoist Tasks...', emoji: '📥' });
+      const tasks = await this.todoistApi.getTasks();
+      emitLog({ message: `Gefunden: ${tasks.length} Tasks`, emoji: '📊' });
+      
+      emitProgress({ 
+        stage: 'processing', 
+        taskCount: tasks.length,
+        processedTasks: 0 
+      });
+
+      this.todoistTasks = [];
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        this.todoistTasks.push({
+          id: task.id,
+          content: task.content,
+          due: task.due ? {
+            date: task.due.date,
+            datetime: task.due.datetime
+          } : null,
+          priority: task.priority,
+          projectId: task.projectId
+        });
+
+        emitLog({ message: `Verarbeite Task ${i + 1}/${tasks.length}: ${task.content.substring(0, 50)}...`, emoji: '✓' });
+        emitProgress({ 
+          stage: 'processing', 
+          taskCount: tasks.length,
+          processedTasks: i + 1,
+          currentTask: task.content
+        });
+
+        if (i % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+      
+      emitLog({ message: 'Erstelle Kontext-String...', emoji: '📝' });
       this.allTasksContext = this.todoistTasks
         .map(t => `- ${t.content}`)
         .join('\n');
       
       this.lastContextUpdate = now;
-      console.log('Task Kontext aktualisiert');
+      emitLog({ message: 'Kontext-Update abgeschlossen', emoji: '✅' });
+      emitProgress({ 
+        stage: 'complete', 
+        taskCount: this.todoistTasks.length,
+        processedTasks: this.todoistTasks.length
+      });
+    } else {
+      emitLog({ message: 'Kontext ist noch aktuell, überspringe Update', emoji: 'ℹ️' });
     }
   }
 
   public async suggestOptimizations(): Promise<Record<string, TaskSuggestion>> {
+    emitLog({ message: 'Starte Optimierungen...', emoji: '🤖' });
     await this.updateTaskContext();
+    
     const { overdue, dueToday } = await this.loadTodoistTasks();
     const allRelevantTasks = [...overdue, ...dueToday];
     
-    if (!process.env.OPENAI_TASK_PROMPT || !process.env.OPENAI_SYSTEM_PROMPT) {
-      throw new Error('OPENAI_TASK_PROMPT und OPENAI_SYSTEM_PROMPT müssen in der .env definiert sein');
-    }
-    
     const suggestions: Record<string, TaskSuggestion> = {};
     
-    for (const task of allRelevantTasks) {
+    for (let i = 0; i < allRelevantTasks.length; i++) {
+      const task = allRelevantTasks[i];
+      emitLog({ message: `Optimiere Task ${i + 1}/${allRelevantTasks.length}: ${task.content}`, emoji: '🔄' });
+      
       const fullPrompt = `
 ${process.env.OPENAI_TASK_PROMPT}
 
@@ -241,36 +285,46 @@ Zu optimierende Aufgabe:
 Kontext - Alle meine anderen Aufgaben (für Zusammenhänge und Verständnis):
 ${this.allTasksContext}
 
-Antworte NUR im folgenden JSON-Format:
+Schlage 5 verschiedene Optimierungen vor. Antworte NUR im folgenden JSON-Format:
 {
-  "newTitle": "Optimierter Titel",
-  "reason": "Begründung für die Optimierung",
-  "estimatedDuration": 30
+  "suggestions": [
+    {
+      "newTitle": "Erste Optimierung",
+      "reason": "Begründung für die erste Optimierung",
+      "estimatedDuration": 30
+    },
+    // ... 4 weitere Vorschläge
+  ]
 }`;
 
-      try {
-        const completion = await this.openai.chat.completions.create({
-          messages: [{ 
-            role: "system", 
-            content: process.env.OPENAI_SYSTEM_PROMPT
-          }, { 
-            role: "user", 
-            content: fullPrompt 
-          }],
-          model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
-          temperature: 0.7,
-          max_tokens: 150,
-          response_format: { type: "json_object" }
-        });
+      const completion = await this.openai.chat.completions.create({
+        messages: [{ 
+          role: "system", 
+          content: process.env.OPENAI_SYSTEM_PROMPT
+        }, { 
+          role: "user", 
+          content: fullPrompt 
+        }],
+        model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
+        temperature: 0.8,
+        max_tokens: 500,
+        response_format: { type: "json_object" }
+      });
 
-        const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
-        suggestions[task.id] = suggestion;
-        
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (error) {
-        console.error(`OpenAI Fehler für Task "${task.content}":`, error);
-        throw error;
-      }
+      const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
+      suggestions[task.id] = suggestion;
+      
+      emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✓' });
+      emitProgress({ 
+        stage: 'optimizing',
+        taskCount: allRelevantTasks.length,
+        processedTasks: i + 1,
+        currentTask: task.content,
+        optimizedTask: {
+          id: task.id,
+          suggestions: suggestion
+        }
+      });
     }
 
     return suggestions;
@@ -288,21 +342,93 @@ Antworte NUR im folgenden JSON-Format:
     return this.timeSlots;
   }
 
-  public async getDashboardData(): Promise<DashboardData> {
+  private async shouldUpdateSuggestions(): Promise<boolean> {
+    if (!this.lastSuggestionsUpdate) return true;
+    
+    const now = new Date();
+    const lastUpdate = this.lastSuggestionsUpdate;
+    
+    // Update wenn:
+    // - Erster Start
+    // - Tageswechsel
+    return !this.lastSuggestionsUpdate ||
+           lastUpdate.getDate() !== now.getDate() ||
+           lastUpdate.getMonth() !== now.getMonth() ||
+           lastUpdate.getFullYear() !== now.getFullYear();
+  }
+
+  public async updateContextInBackground() {
+    try {
+      await this.updateTaskContext();
+      return {
+        success: true,
+        taskCount: this.todoistTasks.length,
+        timestamp: new Date()
+      };
+    } catch (error) {
+      console.error('Background Update Fehler:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  public async getDashboardData(forceUpdate = false): Promise<DashboardData> {
+    emitLog({ message: `Lade Dashboard Daten${forceUpdate ? ' (erzwungen)' : ''}...`, emoji: '🔄' });
+    
+    // Erst Kalender und Zeitberechnung
+    emitLog({ message: 'Lade Kalenderdaten...', emoji: '📅' });
     await this.loadCalendarData();
-    const { overdue, dueToday } = await this.loadTodoistTasks();
-    const taskSuggestions = await this.suggestOptimizations();
     
+    emitLog({ message: 'Berechne freie Zeitfenster...', emoji: '⏰' });
     const freeTimeSlots = this.findFreeTimeSlots();
+    const totalFreeHours = freeTimeSlots.reduce((acc, slot) => acc + slot.duration / 60, 0);
     
-    return {
+    // Erste Teillieferung der Daten
+    const initialData: DashboardData = {
       timestamp: new Date().toISOString(),
       freeTimeSlots,
-      totalFreeHours: freeTimeSlots.reduce((acc, slot) => acc + slot.duration / 60, 0),
+      totalFreeHours,
+      overdueTasks: [],
+      dueTodayTasks: [],
+      events: this.getTimeSlots(),
+      taskSuggestions: {},
+      lastContextUpdate: null,
+      loadedTasksCount: 0
+    };
+
+    // Sende erste Daten
+    emitProgress({ 
+      stage: 'initial_data', 
+      data: initialData,
+      currentTask: 'Kalender und Zeitfenster geladen'
+    });
+    
+    // Dann Todoist
+    emitLog({ message: 'Lade Todoist Tasks...', emoji: '📝' });
+    const { overdue, dueToday } = await this.loadTodoistTasks();
+    
+    // Dann Optimierungen
+    let taskSuggestions = {};
+    if (forceUpdate || await this.shouldUpdateSuggestions()) {
+      emitLog({ message: 'Generiere neue Vorschläge...', emoji: '🤖' });
+      taskSuggestions = await this.suggestOptimizations();
+      this.lastSuggestionsUpdate = new Date();
+    } else {
+      emitLog({ message: 'Verwende bestehende Vorschläge', emoji: 'ℹ️' });
+    }
+    
+    emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
+    
+    // Vollständige Daten
+    return {
+      ...initialData,
       overdueTasks: overdue,
       dueTodayTasks: dueToday,
-      events: this.getTimeSlots(),
-      taskSuggestions
+      taskSuggestions,
+      lastContextUpdate: new Date(this.lastContextUpdate),
+      loadedTasksCount: this.todoistTasks.length
     };
   }
 } 
