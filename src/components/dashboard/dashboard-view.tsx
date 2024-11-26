@@ -338,30 +338,51 @@ export function DashboardView() {
       date.getFullYear() === today.getFullYear()
   }
 
-  // Vereinfachte handleDateChange Funktion
+  // Optimierte handleDateChange Funktion
   const handleDateChange = useCallback(async (newDate: Date) => {
-    console.log('Neues Datum ausgewählt:', newDate)
-    setSelectedDate(newDate)
+    setIsLoading(true);
+    setSelectedDate(newDate);
     
     try {
-      setIsLoading(true)
-      // Nur die Daten für den spezifischen Tag laden
       const response = await fetch(`/api/dashboard/daily?date=${newDate.toISOString()}`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const newData = await response.json();
+      
+      // Batch-Update der States
       setData(newData);
+      setLoadedTasks(newData.loadedTasksCount || 0);
+      if (newData.lastContextUpdate) {
+        setLastContextUpdate(new Date(newData.lastContextUpdate));
+      }
     } catch (error) {
       console.error('Fehler beim Laden der Tagesdaten:', error);
       setError(error instanceof Error ? error.message : 'Unbekannter Fehler');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, []); // Keine Dependencies nötig
 
-  // Initial Setup (nur einmal beim Start)
+  // Optimiertes useMemo für displayData
+  const displayData = useMemo(() => {
+    if (!data) return null;
+    
+    return {
+      ...data,
+      taskSuggestions: optimizedTasks // Nur wenn wirklich nötig
+    };
+  }, [data, optimizedTasks]);
+
+  // Debug-Log nur wenn wirklich nötig
   useEffect(() => {
-    handleDateChange(new Date());
-  }, []);
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🎨 Render mit Daten:', {
+        hasData: !!data,
+        hasError: !!error,
+        loadedTasks,
+        lastUpdate: lastContextUpdate?.toISOString()
+      });
+    }
+  }, [data?.timestamp]); // Nur bei wirklichen Datenänderungen loggen
 
   // EventSource setup effect
   useEffect(() => {
@@ -460,19 +481,6 @@ export function DashboardView() {
     loadedTasks,
     lastUpdate: lastContextUpdate?.toISOString()
   });
-
-  // Kombiniere die Daten für die Anzeige
-  const displayData = useMemo(() => {
-    if (!data) return null;
-    
-    return {
-      ...data,
-      taskSuggestions: {
-        ...data.taskSuggestions,
-        ...optimizedTasks
-      }
-    };
-  }, [data, optimizedTasks]);
 
   // Kontext-Management
   useEffect(() => {

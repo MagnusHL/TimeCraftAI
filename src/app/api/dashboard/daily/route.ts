@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
   try {
     const planner = new CalendarPlanner();
     
-    // Nur die relevanten Daten für den Tag laden
+    // Parallele Ausführung der Datenabfragen
     const [events, tasks, freeTimeSlots] = await Promise.all([
       planner.getEventsForDate(date),
       planner.getTasksForDate(date),
@@ -21,12 +21,13 @@ export async function GET(req: NextRequest) {
       0
     );
 
+    // Einzelne Response mit Timestamp
     return NextResponse.json({
       events,
       freeTimeSlots,
       totalFreeHours,
       ...tasks,
-      timestamp: new Date().toISOString()
+      timestamp: Date.now(), // Für Optimierung der Re-Renders
     });
   } catch (error) {
     console.error('Daily API Error:', error);
