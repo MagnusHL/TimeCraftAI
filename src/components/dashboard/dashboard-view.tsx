@@ -338,17 +338,13 @@ export function DashboardView() {
       date.getFullYear() === today.getFullYear()
   }
 
-  // Optimierte handleDateChange Funktion
-  const handleDateChange = useCallback(async (newDate: Date) => {
+  // Funktion zum Laden der Daten für ein bestimmtes Datum
+  const loadDashboardData = useCallback(async (date: Date) => {
     setIsLoading(true);
-    setSelectedDate(newDate);
-    
     try {
-      const response = await fetch(`/api/dashboard/daily?date=${newDate.toISOString()}`);
+      const response = await fetch(`/api/dashboard/daily?date=${date.toISOString()}`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const newData = await response.json();
-      
-      // Batch-Update der States
       setData(newData);
       setLoadedTasks(newData.loadedTasksCount || 0);
       if (newData.lastContextUpdate) {
@@ -360,7 +356,18 @@ export function DashboardView() {
     } finally {
       setIsLoading(false);
     }
-  }, []); // Keine Dependencies nötig
+  }, []);
+
+  // Initial Load
+  useEffect(() => {
+    loadDashboardData(selectedDate);
+  }, []); // Leere Dependency Array für einmaliges Laden
+
+  // DatePicker Handler
+  const handleDateChange = useCallback(async (newDate: Date) => {
+    setSelectedDate(newDate);
+    await loadDashboardData(newDate);
+  }, [loadDashboardData]);
 
   // Optimiertes useMemo für displayData
   const displayData = useMemo(() => {
@@ -368,9 +375,9 @@ export function DashboardView() {
     
     return {
       ...data,
-      taskSuggestions: optimizedTasks // Nur wenn wirklich nötig
+      taskSuggestions: data.taskSuggestions || {} // Verwende die Suggestions aus den API-Daten
     };
-  }, [data, optimizedTasks]);
+  }, [data]); // Nur von data abhängig
 
   // Debug-Log nur wenn wirklich nötig
   useEffect(() => {
@@ -387,72 +394,71 @@ export function DashboardView() {
   // EventSource setup effect
   useEffect(() => {
     let eventSource: EventSource | null = null;
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 1000;
 
     const setupEventSource = () => {
-      console.log('🔌 Verbinde mit EventSource...');
-      eventSource = new EventSource('/api/dashboard/progress');
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const progress = JSON.parse(event.data);
-          console.log('📨 Progress Update erhalten:', progress);
-          
-          // Initial-Daten oder Task-Updates
-          if ((progress.stage === 'initial_data' || progress.stage === 'processing') && progress.data) {
-            console.log('📝 Setze Daten:', progress.data);
-            setData(progress.data);
-            // Aktualisiere lastContextUpdate wenn vorhanden
-            if (progress.data.lastContextUpdate) {
-              setLastContextUpdate(new Date(progress.data.lastContextUpdate));
-            }
-          }
-          
-          // Task-Verarbeitung
-          if (progress.stage === 'processing') {
-            console.log('⚙️ Verarbeite Tasks:', progress.processedTasks);
-            setLoadedTasks(progress.processedTasks || 0);
-          }
-
-          // Kontext-Update abgeschlossen
-          if (progress.stage === 'complete') {
-            setLastContextUpdate(new Date());
-          }
-          
-          // Neue optimierte Aufgabe
-          if (progress.optimizedTask) {
-            console.log('✨ Neue optimierte Aufgabe:', progress.optimizedTask);
-            setData(prevData => {
-              if (!prevData) return prevData;
-              
-              return {
-                ...prevData,
-                taskSuggestions: {
-                  ...prevData.taskSuggestions,
-                  [progress.optimizedTask.id]: progress.optimizedTask.suggestions
-                }
-              };
-            });
-          }
-        } catch (err) {
-          console.error('❌ Event parsing error:', err);
+      try {
+        if (eventSource) {
+          eventSource.close();
         }
-      };
 
-      eventSource.onerror = (err) => {
-        console.error('❌ EventSource Fehler:', err);
-        eventSource?.close();
-        setTimeout(setupEventSource, 5000);
-      };
+        eventSource = new EventSource('/api/dashboard/progress');
+        
+        eventSource.onmessage = (event) => {
+          try {
+            const progress = JSON.parse(event.data);
+            
+            if (progress.stage === 'initial_data' && progress.data) {
+              setData(progress.data);
+            }
+            
+            if (progress.optimizedTask) {
+              setData(prevData => {
+                if (!prevData) return prevData;
+                return {
+                  ...prevData,
+                  taskSuggestions: {
+                    ...prevData.taskSuggestions,
+                    [progress.optimizedTask.id]: progress.optimizedTask.suggestions
+                  }
+                };
+              });
+            }
+          } catch (err) {
+            console.error('Event parsing error:', err);
+          }
+        };
 
-      eventSource.onopen = () => {
-        console.log('✅ EventSource Verbindung hergestellt');
-      };
+        eventSource.onerror = (err) => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+
+          if (retryCount < MAX_RETRIES) {
+            const timeout = RETRY_DELAY * Math.pow(2, retryCount);
+            retryCount++;
+            setTimeout(setupEventSource, timeout);
+          }
+        };
+
+        eventSource.onopen = () => {
+          retryCount = 0;
+        };
+
+      } catch (error) {
+        console.error('EventSource setup error:', error);
+      }
     };
 
     setupEventSource();
 
     return () => {
-      eventSource?.close();
+      if (eventSource) {
+        eventSource.close();
+      }
     };
   }, []);
 

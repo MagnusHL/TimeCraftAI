@@ -1,39 +1,26 @@
-import { NextResponse, NextRequest } from 'next/server'
+import { NextResponse } from 'next/server'
 import { CalendarPlanner } from '@/lib/services/calendar-planner'
 
-export async function GET(req: NextRequest) {
-  const searchParams = req.nextUrl.searchParams
-  const dateParam = searchParams.get('date')
-  const date = dateParam ? new Date(dateParam) : new Date()
-  
+const planner = new CalendarPlanner()
+
+export async function GET(request: Request) {
   try {
-    const planner = new CalendarPlanner();
-    
-    // Parallele Ausführung der Datenabfragen
-    const [events, tasks, freeTimeSlots] = await Promise.all([
-      planner.getEventsForDate(date),
-      planner.getTasksForDate(date),
-      planner.getFreeTimeSlotsForDate(date)
-    ]);
+    const { searchParams } = new URL(request.url)
+    const dateParam = searchParams.get('date')
+    const date = dateParam ? new Date(dateParam) : new Date()
 
-    const totalFreeHours = freeTimeSlots.reduce(
-      (acc, slot) => acc + slot.duration / 60, 
-      0
-    );
+    // Stelle sicher, dass das Datum gültig ist
+    if (isNaN(date.getTime())) {
+      return NextResponse.json({ error: 'Ungültiges Datum' }, { status: 400 })
+    }
 
-    // Einzelne Response mit Timestamp
-    return NextResponse.json({
-      events,
-      freeTimeSlots,
-      totalFreeHours,
-      ...tasks,
-      timestamp: Date.now(), // Für Optimierung der Re-Renders
-    });
+    const data = await planner.getDashboardData(false, date)
+    return NextResponse.json(data)
   } catch (error) {
-    console.error('Daily API Error:', error);
-    return NextResponse.json({ 
-      error: 'Internal Server Error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 });
+    console.error('Fehler in /api/dashboard/daily:', error)
+    return NextResponse.json(
+      { error: 'Interner Server Fehler' },
+      { status: 500 }
+    )
   }
 } 

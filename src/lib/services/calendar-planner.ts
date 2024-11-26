@@ -8,6 +8,7 @@ import { emitProgress } from '@/app/api/dashboard/progress/route'
 import { emitLog } from '@/app/api/logs/route'
 import fs from 'fs/promises';
 import path from 'path';
+import { suggestOptimizations } from './task-optimizer'
 
 export interface TimeSlot {
   start: Date;
@@ -751,9 +752,11 @@ Aktueller Status:
   // Überarbeitete Methode für Tagesaufgaben
   public async getTasksForDate(targetDate: Date): Promise<{ 
     overdueTasks: TodoistTask[],
-    dueTodayTasks: TodoistTask[] 
+    dueTodayTasks: TodoistTask[],
+    taskSuggestions: Record<string, TaskSuggestion>
   }> {
     try {
+      // 1. Lade alle Aufgaben von Todoist
       const tasks = await this.todoistApi.getTasks();
       const targetDay = new Date(targetDate);
       targetDay.setHours(0, 0, 0, 0);
@@ -761,15 +764,13 @@ Aktueller Status:
       const overdueTasks: TodoistTask[] = [];
       const dueTodayTasks: TodoistTask[] = [];
 
-      // Sammle erst alle relevanten Tasks
+      // 2. Sortiere die Aufgaben nach überfällig und fällig
       for (const task of tasks) {
         if (task.due) {
           const dueDate = new Date(task.due.date);
           dueDate.setHours(0, 0, 0, 0);
           
-          // Task-ID als String für Cache-Lookup
           const taskId = task.id.toString();
-          
           const mappedTask = {
             id: task.id,
             content: task.content,
@@ -779,9 +780,7 @@ Aktueller Status:
             },
             priority: task.priority,
             projectId: task.projectId,
-            optimized: this.optimizedTasks.includes(taskId),
-            // Lade Suggestions direkt aus dem Cache
-            suggestions: this.taskSuggestionsCache[taskId]?.suggestions || null
+            optimized: this.optimizedTasks.includes(taskId)
           };
 
           if (this.isToday(targetDate)) {
@@ -790,33 +789,57 @@ Aktueller Status:
             } else if (dueDate.getTime() === targetDay.getTime()) {
               dueTodayTasks.push(mappedTask);
             }
-          } else {
-            if (dueDate.getTime() === targetDay.getTime()) {
-              dueTodayTasks.push(mappedTask);
-            }
+          } else if (dueDate.getTime() === targetDay.getTime()) {
+            dueTodayTasks.push(mappedTask);
           }
         }
       }
 
-      // Generiere nur für Tasks ohne Suggestions neue Vorschläge
+      // 3. Prüfe und generiere Vorschläge für nicht optimierte Aufgaben
       const allTasks = [...overdueTasks, ...dueTodayTasks];
       for (const task of allTasks) {
         const taskId = task.id.toString();
         
-        // Prüfe ob bereits Suggestions im Cache existieren
+        // Wenn keine Vorschläge im Cache und Task nicht optimiert
         if (!this.taskSuggestionsCache[taskId] && !this.optimizedTasks.includes(taskId)) {
-          emitLog({ message: `Generiere Vorschläge für: ${task.content}`, emoji: '🤖' });
-          const suggestions = await this.generateSuggestionsForTask(task);
-          this.taskSuggestionsCache[taskId] = suggestions;
-          task.suggestions = suggestions.suggestions; // Wichtig: Nur das suggestions Array zuweisen
-          await this.saveCacheToDisk();
+          emitLog({ message: `Generiere neue Vorschläge für: ${task.content}`, emoji: '🤖' });
+          try {
+            // Hier direkt generateSuggestionsForTask aufrufen statt suggestOptimizations
+            const suggestions = await this.generateSuggestionsForTask(task);
+            this.taskSuggestionsCache[taskId] = suggestions;
+            await this.saveCacheToDisk();
+            
+            emitLog({ 
+              message: `Neue Vorschläge für "${task.content}" generiert`, 
+              emoji: '✨' 
+            });
+          } catch (error) {
+            console.error(`Fehler beim Generieren der Vorschläge für ${task.content}:`, error);
+          }
         }
       }
 
-      return { overdueTasks, dueTodayTasks };
+      // Log-Eintrag für geladene Suggestions
+      const cachedSuggestionsCount = Object.keys(this.taskSuggestionsCache).length;
+      if (cachedSuggestionsCount > 0) {
+        emitLog({ 
+          message: `${cachedSuggestionsCount} Optimierungsvorschläge aus Cache geladen`, 
+          emoji: '💡' 
+        });
+      }
+
+      return { 
+        overdueTasks, 
+        dueTodayTasks,
+        taskSuggestions: this.taskSuggestionsCache
+      };
     } catch (error) {
       console.error('Fehler beim Laden der Tasks:', error);
-      return { overdueTasks: [], dueTodayTasks: [] };
+      return { 
+        overdueTasks: [], 
+        dueTodayTasks: [],
+        taskSuggestions: {}
+      };
     }
   }
 
