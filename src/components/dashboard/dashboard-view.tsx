@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Clock, AlertCircle, Check } from 'lucide-react'
@@ -249,7 +248,7 @@ function Sidebar({ activeTab, onTabChange, isLoading }: {
     <div className="w-40 border-r h-screen flex flex-col">
       {/* Navigation */}
       <div className="flex-1">
-        <div className="p-1">
+        <div>
           <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
             Navigation
           </h2>
@@ -283,7 +282,7 @@ function Sidebar({ activeTab, onTabChange, isLoading }: {
       </div>
 
       {/* Debug Tools */}
-      <div className="border-t p-1">
+      <div className="border-t">
         <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
           Debug
         </h2>
@@ -590,51 +589,115 @@ export function DashboardView() {
         isLoading={isLoading}
       />
       
-      <main className="flex-1 overflow-auto p-4">
+      <main className="flex-1 overflow-auto">
         {/* Übersicht */}
-        <div className={cn(activeTab === "overview" && "block", activeTab !== "overview" && "hidden")}>
-          <Card>
-            <CardContent className="p-6">
-              <h2 className="text-2xl font-semibold mb-6">Tagesübersicht</h2>
-              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-5 w-5 text-blue-500" />
-                      <h3 className="font-medium">Verfügbare Zeit</h3>
-                    </div>
-                    <p className="text-2xl font-bold mt-2">
-                      {displayData?.totalFreeHours.toFixed(1) || '0'} Stunden
-                    </p>
-                  </CardContent>
-                </Card>
+        <div className={cn(
+          "p-4",
+          activeTab === "overview" && "block",
+          activeTab !== "overview" && "hidden"
+        )}>
+          <h2 className="text-2xl font-semibold mb-6">Tagesübersicht</h2>
+          
+          {/* Statistik-Karten */}
+          <div className="grid gap-6 md:grid-cols-3 mb-6">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-5 w-5 text-blue-500" />
+                  <h3 className="font-medium">Verfügbare Zeit</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">
+                  {displayData?.totalFreeHours.toFixed(1) || '0'} Stunden
+                </p>
+              </CardContent>
+            </Card>
 
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center gap-2">
-                      <AlertCircle className="h-5 w-5 text-red-500" />
-                      <h3 className="font-medium">Überfällige Aufgaben</h3>
-                    </div>
-                    <p className="text-2xl font-bold mt-2">
-                      {displayData?.overdueTasks?.length || 0}
-                    </p>
-                  </CardContent>
-                </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-5 w-5 text-red-500" />
+                  <h3 className="font-medium">Überfällige Aufgaben</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">
+                  {displayData?.overdueTasks?.length || 0}
+                </p>
+              </CardContent>
+            </Card>
 
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-5 w-5 text-green-500" />
-                      <h3 className="font-medium">Heute fällig</h3>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-5 w-5 text-green-500" />
+                  <h3 className="font-medium">Heute fällig</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">
+                  {displayData?.dueTodayTasks?.length || 0}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Kombinierte Ansicht */}
+          <div className="flex gap-6">
+            {/* Kalender-Bereich (1/3) */}
+            <div className="w-1/3">
+              <h3 className="text-lg font-medium mb-4">Termine heute</h3>
+              <div className="space-y-2">
+                {displayData?.events?.map((event, i) => (
+                  <div key={i} className="flex flex-col p-3 border rounded-lg hover:bg-muted/50">
+                    <div className="text-sm font-medium text-muted-foreground">
+                      {formatTime(new Date(event.start))} - {formatTime(new Date(event.end))}
                     </div>
-                    <p className="text-2xl font-bold mt-2">
-                      {displayData?.dueTodayTasks?.length || 0}
-                    </p>
-                  </CardContent>
-                </Card>
+                    <div className="font-medium">{event.title}</div>
+                  </div>
+                ))}
+                {(!displayData?.events || displayData.events.length === 0) && (
+                  <p className="text-muted-foreground">Keine Termine heute</p>
+                )}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+
+            {/* Aufgaben-Bereich (2/3) */}
+            <div className="w-2/3 space-y-6">
+              {/* Überfällige Aufgaben */}
+              <div>
+                <h3 className="text-lg font-medium text-red-600 mb-4 flex items-center gap-2">
+                  <AlertCircle className="h-5 w-5" />
+                  Überfällige Aufgaben
+                </h3>
+                <div className="space-y-2">
+                  {displayData?.overdueTasks?.map((task) => (
+                    <TaskCard 
+                      key={task.id}
+                      task={task}
+                      suggestions={displayData.taskSuggestions[task.id]}
+                      isDueToday={false}
+                      onTitleUpdate={handleTitleUpdate}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Heute fällige Aufgaben */}
+              <div>
+                <h3 className="text-lg font-medium text-blue-600 mb-4 flex items-center gap-2">
+                  <Clock className="h-5 w-5" />
+                  Heute fällige Aufgaben
+                </h3>
+                <div className="space-y-2">
+                  {displayData?.dueTodayTasks?.map((task) => (
+                    <TaskCard 
+                      key={task.id}
+                      task={task}
+                      suggestions={displayData.taskSuggestions[task.id]}
+                      isDueToday={true}
+                      onTitleUpdate={handleTitleUpdate}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         
         {/* Kalender */}
