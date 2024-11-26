@@ -245,9 +245,9 @@ function Sidebar({ activeTab, onTabChange, isLoading }: {
   isLoading: boolean;
 }) {
   return (
-    <div className="w-40 border-r h-screen flex flex-col">
+    <div className="w-48 border-r h-screen flex flex-col">
       {/* Navigation */}
-      <div className="flex-1">
+      <div className="flex-1 pt-2">
         <div>
           <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
             Navigation
@@ -282,7 +282,7 @@ function Sidebar({ activeTab, onTabChange, isLoading }: {
       </div>
 
       {/* Debug Tools */}
-      <div className="border-t">
+      <div className="border-t border-muted mt-2 pb-2">
         <h2 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-tight mb-1">
           Debug
         </h2>
@@ -302,17 +302,6 @@ function Sidebar({ activeTab, onTabChange, isLoading }: {
           >
             <FileText className="mr-2 h-3 w-3" />
             Kontext
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start h-8 text-sm"
-            disabled
-          >
-            <Settings className={cn(
-              "mr-2 h-3 w-3",
-              isLoading && "animate-spin"
-            )} />
-            Status
           </Button>
         </div>
       </div>
@@ -800,46 +789,42 @@ export function DashboardView() {
 
         {/* System Logs */}
         <div className={cn(activeTab === "logs" && "block", activeTab !== "logs" && "hidden")}>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold">System Logs</h2>
-                <div className="text-sm text-muted-foreground">
-                  {logs.length} Einträge
-                </div>
+          <div className="p-4">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">System Logs</h2>
+              <div className="text-sm text-muted-foreground">
+                {logs.length} Einträge
               </div>
-              <div className="space-y-1">
-                {[...logs].reverse().map((log, index) => (
-                  <div 
-                    key={index} 
-                    className="flex items-start gap-2 py-1 border-b last:border-0 hover:bg-muted/50 rounded px-2"
-                  >
-                    <div className="text-sm text-muted-foreground whitespace-nowrap">
-                      {log.timestamp.toLocaleTimeString()}
-                    </div>
-                    <div className="w-6 text-center flex-shrink-0">
-                      {log.emoji}
-                    </div>
-                    <div className="flex-1 text-sm">
-                      {log.message}
-                    </div>
+            </div>
+            <div className="space-y-1">
+              {[...logs].reverse().map((log, index) => (
+                <div 
+                  key={index} 
+                  className="flex items-start gap-2 py-1 border-b last:border-0 hover:bg-muted/50 rounded px-2"
+                >
+                  <div className="text-sm text-muted-foreground whitespace-nowrap">
+                    {log.timestamp.toLocaleTimeString()}
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  <div className="w-6 text-center flex-shrink-0">
+                    {log.emoji}
+                  </div>
+                  <div className="flex-1 text-sm">
+                    {log.message}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Kontext */}
         <div className={cn(activeTab === "context" && "block", activeTab !== "context" && "hidden")}>
-          <Card>
-            <CardContent className="p-4">
-              <h2 className="text-xl font-semibold mb-4">Aktueller Kontext</h2>
-              <pre className="whitespace-pre-wrap text-sm font-mono">
-                {context}
-              </pre>
-            </CardContent>
-          </Card>
+          <div className="p-4">
+            <h2 className="text-xl font-semibold mb-4">Aktueller Kontext</h2>
+            <pre className="whitespace-pre-wrap text-sm font-mono">
+              {context}
+            </pre>
+          </div>
         </div>
       </main>
     </div>
