@@ -53,23 +53,98 @@ export class CalendarPlanner {
   private todoistTasks: TodoistTask[] = [];
   private allTasksContext: string = '';
   private lastContextUpdate: number = 0;
-  private readonly CONTEXT_UPDATE_INTERVAL = 5 * 60 * 1000;
+  private contextUpdateInterval = 5 * 60 * 1000; // 5 Minuten
+  private contextUpdateTimer: NodeJS.Timeout | null = null;
   private msGraphClient: Client | null = null;
   private todoistApi: TodoistApi;
   private openai: OpenAI;
   private lastSuggestionsUpdate: Date | null = null;
   private taskSuggestionsCache: Record<string, TaskSuggestion> = {};
   private calendarCache: { events: TimeSlot[]; lastUpdate: number } = { events: [], lastUpdate: 0 };
-  private readonly CACHE_FILE = path.join(process.cwd(), 'data', 'suggestions-cache.json');
+  private readonly SUGGESTIONS_CACHE_FILE = path.join(process.cwd(), 'data', 'suggestions-cache.json');
   private readonly CALENDAR_CACHE_FILE = path.join(process.cwd(), 'data', 'calendar-cache.json');
+  private readonly CONTEXT_CACHE_FILE = path.join(process.cwd(), 'data', 'context-cache.json');
+  private contextCache: {
+    tasks: Array<{
+      title: string;
+      project: string;
+      due: string;
+      priority: number;
+    }>;
+    calendar: Array<{
+      title: string;
+      start: Date;
+      end: Date;
+    }>;
+    lastUpdate: number;
+  } = { tasks: [], calendar: [], lastUpdate: 0 };
+  private readonly OPTIMIZED_TASKS_FILE = path.join(process.cwd(), 'data', 'optimized-tasks.json');
+  private optimizedTasks: string[] = [];
   
   constructor() {
     this.todoistApi = new TodoistApi(process.env.TODOIST_API_TOKEN || '');
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
-    this.loadCacheFromDisk().catch(console.error);
-    this.loadCalendarCacheFromDisk().catch(console.error);
+    
+    // Initialisiere alles in der richtigen Reihenfolge
+    this.initializeAll().catch(console.error);
+  }
+
+  private async initializeAll() {
+    try {
+      // Erst MS Graph initialisieren
+      await this.initializeMsGraphClient();
+      
+      // Dann die Caches laden
+      await Promise.all([
+        this.loadCacheFromDisk(),
+        this.loadCalendarCacheFromDisk(),
+        this.loadOptimizedTasks()
+      ]);
+
+      // Zuletzt den Kontext initialisieren
+      await this.initializeContext();
+    } catch (error) {
+      console.error('Fehler bei der Initialisierung:', error);
+    }
+  }
+
+  private async initializeContext() {
+    try {
+      // Lade erst den Cache
+      await this.loadContextCache();
+      
+      // Prüfe dann das Alter
+      if (Date.now() - this.contextCache.lastUpdate > this.contextUpdateInterval) {
+        await this.updateContext();
+      }
+
+      // Timer für regelmäßige Updates starten
+      this.startContextUpdateTimer();
+    } catch (error) {
+      console.error('Fehler beim Initialisieren des Kontexts:', error);
+    }
+  }
+
+  private startContextUpdateTimer() {
+    if (this.contextUpdateTimer) {
+      clearInterval(this.contextUpdateTimer);
+    }
+    
+    this.contextUpdateTimer = setInterval(async () => {
+      await this.updateContext();
+    }, this.contextUpdateInterval);
+  }
+
+  private async updateContext() {
+    console.log('Aktualisiere Kontext...');
+    // Lade alle Kalendereinträge für den konfigurierten Zeitraum
+    await this.loadCalendarData();
+    // Lade alle Todoist-Aufgaben für den Kontext
+    await this.loadAllTodoistTasks();
+    // Cache aktualisieren
+    await this.saveCacheToDisk();
   }
 
   private async loadCacheFromDisk() {
@@ -77,12 +152,12 @@ export class CalendarPlanner {
       // Stelle sicher, dass das Verzeichnis existiert
       await fs.mkdir(path.join(process.cwd(), 'data'), { recursive: true });
       
-      const cacheExists = await fs.access(this.CACHE_FILE)
+      const cacheExists = await fs.access(this.SUGGESTIONS_CACHE_FILE)
         .then(() => true)
         .catch(() => false);
 
       if (cacheExists) {
-        const cacheData = await fs.readFile(this.CACHE_FILE, 'utf-8');
+        const cacheData = await fs.readFile(this.SUGGESTIONS_CACHE_FILE, 'utf-8');
         this.taskSuggestionsCache = JSON.parse(cacheData);
         emitLog({ message: `Cache geladen: ${Object.keys(this.taskSuggestionsCache).length} Optimierungen`, emoji: '💾' });
       } else {
@@ -97,7 +172,7 @@ export class CalendarPlanner {
   private async saveCacheToDisk() {
     try {
       await fs.writeFile(
-        this.CACHE_FILE,
+        this.SUGGESTIONS_CACHE_FILE,
         JSON.stringify(this.taskSuggestionsCache, null, 2),
         'utf-8'
       );
@@ -185,21 +260,21 @@ export class CalendarPlanner {
   }
 
   public async loadCalendarData() {
-    const now = Date.now();
-    const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '30');
-    
-    // Prüfe ob Cache aktuell ist
-    if (now - this.calendarCache.lastUpdate < this.CONTEXT_UPDATE_INTERVAL) {
-      emitLog({ message: 'Verwende gecachte Kalenderdaten', emoji: 'ℹ️' });
-      this.timeSlots = this.filterTodayEvents(this.calendarCache.events);
-      return;
-    }
-
-    if (!this.msGraphClient) {
-      throw new Error('MS Graph Client nicht initialisiert');
-    }
-
     try {
+      if (!this.msGraphClient) {
+        await this.initializeMsGraphClient();
+      }
+
+      const now = Date.now();
+      const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '30');
+      
+      // Prüfe ob Cache aktuell ist
+      if (now - this.calendarCache.lastUpdate < this.contextUpdateInterval) {
+        emitLog({ message: 'Verwende gecachte Kalenderdaten', emoji: 'ℹ️' });
+        this.timeSlots = this.filterTodayEvents(this.calendarCache.events);
+        return;
+      }
+
       // Lade Termine ab heute 00:00 Uhr
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -260,14 +335,8 @@ export class CalendarPlanner {
         emoji: '📅' 
       });
     } catch (error) {
-      console.error('Kalenderdaten Fehler:', error);
-      
-      if (this.calendarCache.events.length > 0) {
-        emitLog({ message: 'Verwende Cache wegen Fehler beim Laden', emoji: '⚠️' });
-        this.timeSlots = this.filterTodayEvents(this.calendarCache.events);
-      } else {
-        throw error;
-      }
+      console.error('Fehler beim Laden der Kalenderdaten:', error);
+      throw error;
     }
   }
 
@@ -372,76 +441,6 @@ export class CalendarPlanner {
     }
 
     return freeSlots;
-  }
-
-  private async updateTaskContext() {
-    const now = Date.now();
-    if (now - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
-      emitLog({ message: 'Starte Kontext-Update...', emoji: '🔄' });
-      
-      // Lade Kalenderkontext separat
-      const daysToInclude = parseInt(process.env.DAYS_TO_INCLUDE || '30');
-      const calendarContext = await this.loadContextCalendarData();
-      
-      emitLog({ message: `Kalenderdaten für die nächsten ${daysToInclude} Tage geladen`, emoji: '📅' });
-      
-      // Lade Todoist Tasks
-      emitLog({ message: 'Lade Todoist Tasks...', emoji: '📥' });
-      const tasks = await this.todoistApi.getTasks();
-      emitLog({ message: `Gefunden: ${tasks.length} Tasks`, emoji: '📊' });
-      
-      emitProgress({ 
-        stage: 'processing', 
-        taskCount: tasks.length,
-        processedTasks: 0 
-      });
-
-      this.todoistTasks = [];
-      for (let i = 0; i < tasks.length; i++) {
-        const task = tasks[i];
-        this.todoistTasks.push({
-          id: task.id,
-          content: task.content,
-          due: task.due ? {
-            date: task.due.date,
-            datetime: task.due.datetime
-          } : null,
-          priority: task.priority,
-          projectId: task.projectId
-        });
-
-        emitProgress({ 
-          stage: 'processing', 
-          taskCount: tasks.length,
-          processedTasks: i + 1,
-          currentTask: task.content
-        });
-
-        if (i % 10 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
-      }
-      
-      // Erstelle kombinierten Kontext
-      emitLog({ message: 'Erstelle Kontext-String...', emoji: '📝' });
-      this.allTasksContext = `
-Kalendereinträge für die nächsten ${daysToInclude} Tage:
-${calendarContext}
-
-Alle Aufgaben:
-${this.todoistTasks.map(t => `- ${t.content}`).join('\n')}
-`;
-      
-      this.lastContextUpdate = now;
-      emitLog({ message: `Kontext-Update abgeschlossen um ${new Date(now).toLocaleTimeString()}`, emoji: '✅' });
-      emitProgress({ 
-        stage: 'complete', 
-        taskCount: this.todoistTasks.length,
-        processedTasks: this.todoistTasks.length
-      });
-    } else {
-      emitLog({ message: `Letztes Kontext-Update war um ${new Date(this.lastContextUpdate).toLocaleTimeString()}`, emoji: 'ℹ️' });
-    }
   }
 
   public async suggestOptimizations(): Promise<Record<string, TaskSuggestion>> {
@@ -591,7 +590,7 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
     }
   }
 
-  public async getDashboardData(forceUpdate = false): Promise<DashboardData> {
+  public async getDashboardData(forceUpdate = false, targetDate: Date = new Date()): Promise<DashboardData> {
     emitLog({ message: `Lade Dashboard Daten${forceUpdate ? ' (erzwungen)' : ''}...`, emoji: '🔄' });
     
     // Erst Kalender und Zeitberechnung
@@ -647,7 +646,7 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
       await this.suggestOptimizations();
       this.lastSuggestionsUpdate = new Date();
     } else {
-      emitLog({ message: 'Alle Tasks sind bereits optimiert', emoji: '✅' });
+      emitLog({ message: 'Alle Tasks sind bereits optimiert', emoji: '' });
     }
     
     emitLog({ message: 'Dashboard Daten vollständig geladen', emoji: '✅' });
@@ -663,7 +662,7 @@ Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
   public async getCurrentContext(): Promise<string> {
     try {
       // Nur den Kontext aktualisieren, wenn nötig
-      if (Date.now() - this.lastContextUpdate > this.CONTEXT_UPDATE_INTERVAL || !this.allTasksContext) {
+      if (Date.now() - this.lastContextUpdate > this.contextUpdateInterval || !this.allTasksContext) {
         await this.updateTaskContext();
       }
       
@@ -724,19 +723,182 @@ Aktueller Status:
   }
 
   // Neue Methode für Kontext-Kalendereinträge
-  private async loadContextCalendarData(): Promise<string> {
-    if (this.calendarCache.events.length === 0) {
-      return 'Keine Kalendereinträge im Cache';
+  private async loadContextCache() {
+    try {
+      const exists = await fs.access(this.CONTEXT_CACHE_FILE).then(() => true).catch(() => false);
+      if (exists) {
+        const data = await fs.readFile(this.CONTEXT_CACHE_FILE, 'utf-8');
+        this.contextCache = JSON.parse(data);
+        emitLog({ message: 'Kontext-Cache geladen', emoji: '💾' });
+      }
+    } catch (error) {
+      console.error('Fehler beim Laden des Kontext-Cache:', error);
     }
+  }
 
-    return this.calendarCache.events
-      .map(event => {
-        // Konvertiere Strings zu Date-Objekten
-        const start = new Date(event.start);
-        const end = new Date(event.end);
-        return `- ${event.title} (${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()})`;
-      })
-      .join('\n');
+  private async saveContextCache() {
+    try {
+      await fs.writeFile(
+        this.CONTEXT_CACHE_FILE,
+        JSON.stringify(this.contextCache, null, 2)
+      );
+      emitLog({ message: 'Kontext-Cache gespeichert', emoji: '💾' });
+    } catch (error) {
+      console.error('Fehler beim Speichern des Kontext-Cache:', error);
+    }
+  }
+
+  // Überarbeitete Methode für Tagesaufgaben
+  public async getTasksForDate(targetDate: Date): Promise<{ 
+    overdueTasks: TodoistTask[],
+    dueTodayTasks: TodoistTask[] 
+  }> {
+    try {
+      const tasks = await this.todoistApi.getTasks();
+      const targetDay = new Date(targetDate);
+      targetDay.setHours(0, 0, 0, 0);
+      
+      const overdueTasks: TodoistTask[] = [];
+      const dueTodayTasks: TodoistTask[] = [];
+
+      // Sammle erst alle relevanten Tasks
+      for (const task of tasks) {
+        if (task.due) {
+          const dueDate = new Date(task.due.date);
+          dueDate.setHours(0, 0, 0, 0);
+          
+          // Task-ID als String für Cache-Lookup
+          const taskId = task.id.toString();
+          
+          const mappedTask = {
+            id: task.id,
+            content: task.content,
+            due: {
+              date: task.due.date,
+              datetime: task.due.datetime
+            },
+            priority: task.priority,
+            projectId: task.projectId,
+            optimized: this.optimizedTasks.includes(taskId),
+            // Lade Suggestions direkt aus dem Cache
+            suggestions: this.taskSuggestionsCache[taskId]?.suggestions || null
+          };
+
+          if (this.isToday(targetDate)) {
+            if (dueDate < targetDay) {
+              overdueTasks.push(mappedTask);
+            } else if (dueDate.getTime() === targetDay.getTime()) {
+              dueTodayTasks.push(mappedTask);
+            }
+          } else {
+            if (dueDate.getTime() === targetDay.getTime()) {
+              dueTodayTasks.push(mappedTask);
+            }
+          }
+        }
+      }
+
+      // Generiere nur für Tasks ohne Suggestions neue Vorschläge
+      const allTasks = [...overdueTasks, ...dueTodayTasks];
+      for (const task of allTasks) {
+        const taskId = task.id.toString();
+        
+        // Prüfe ob bereits Suggestions im Cache existieren
+        if (!this.taskSuggestionsCache[taskId] && !this.optimizedTasks.includes(taskId)) {
+          emitLog({ message: `Generiere Vorschläge für: ${task.content}`, emoji: '🤖' });
+          const suggestions = await this.generateSuggestionsForTask(task);
+          this.taskSuggestionsCache[taskId] = suggestions;
+          task.suggestions = suggestions.suggestions; // Wichtig: Nur das suggestions Array zuweisen
+          await this.saveCacheToDisk();
+        }
+      }
+
+      return { overdueTasks, dueTodayTasks };
+    } catch (error) {
+      console.error('Fehler beim Laden der Tasks:', error);
+      return { overdueTasks: [], dueTodayTasks: [] };
+    }
+  }
+
+  // Neue Hilfsmethode für die Generierung von Suggestions
+  private async generateSuggestionsForTask(task: TodoistTask): Promise<TaskSuggestion> {
+    emitLog({ message: `Optimiere Task: ${task.content}`, emoji: '' });
+    
+    const systemPrompt = `Du bist ein Experte für die Optimierung von Aufgabenbeschreibungen. 
+Antworte ausschließlich im JSON-Format mit einem optimierten Titel und einer Begründung.`;
+
+    const userPrompt = `Analysiere diese Aufgabe und erstelle ein JSON mit Vorschlägen zur Optimierung:
+
+Aktuelle Aufgabe: "${task.content}"
+
+Kontext - Andere Aufgaben:
+${this.allTasksContext}
+
+Erstelle ein JSON-Objekt mit 'suggestions' Array, das 5 verschiedene Vorschläge enthält.
+Jeder Vorschlag soll 'newTitle', 'reason' und 'estimatedDuration' enthalten.`;
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview",
+        temperature: 0.7,
+        max_tokens: 500,
+        response_format: { type: "json_object" }
+      });
+
+      const suggestion = JSON.parse(completion.choices[0].message.content || '{}');
+      emitLog({ message: `Optimierung für "${task.content}" abgeschlossen`, emoji: '✅' });
+      return suggestion;
+    } catch (error) {
+      console.error(`Fehler bei der Optimierung von "${task.content}":`, error);
+      emitLog({ message: `Fehler bei der Optimierung von "${task.content}"`, emoji: '❌' });
+      throw error;
+    }
+  }
+
+  // Überarbeitete Kontext-Update Methode
+  private async updateContext() {
+    try {
+      const now = Date.now();
+      
+      // Prüfe ob Update nötig ist
+      if (now - this.contextCache.lastUpdate < this.contextUpdateInterval) {
+        return;
+      }
+
+      // Lade aktuelle Daten
+      const [tasks, events] = await Promise.all([
+        this.todoistApi.getTasks(),
+        this.loadCalendarData()
+      ]);
+
+      // Aktualisiere Kontext
+      this.contextCache = {
+        tasks: tasks.map(task => ({
+          title: task.content,
+          project: task.projectId,
+          due: task.due?.date || 'Kein Datum',
+          priority: task.priority
+        })),
+        calendar: this.calendarCache.events.map(event => ({
+          title: event.title,
+          start: event.start,
+          end: event.end
+        })),
+        lastUpdate: now
+      };
+
+      // Speichere neuen Kontext
+      await this.saveContextCache();
+      
+      emitLog({ message: 'Kontext aktualisiert', emoji: '' });
+    } catch (error) {
+      console.error('Fehler beim Aktualisieren des Kontexts:', error);
+      throw error;
+    }
   }
 
   private filterTodayEvents(events: TimeSlot[]): TimeSlot[] {
@@ -790,5 +952,228 @@ Aktueller Status:
     });
 
     return todayEvents;
+  }
+
+  private async getEvents(targetDate: Date): Promise<Event[]> {
+    // Anpassen der Event-Abfrage für das spezifische Datum
+  }
+
+  private async getTasks(targetDate: Date): Promise<TodoistTask[]> {
+    // Anpassen der Task-Abfrage für das spezifische Datum
+  }
+
+  // Neue Methode für Events eines spezifischen Tages
+  public async getEventsForDate(targetDate: Date): Promise<TimeSlot[]> {
+    try {
+      // Stelle sicher, dass MS Graph Client initialisiert ist
+      if (!this.msGraphClient) {
+        await this.initializeMsGraphClient();
+      }
+
+      // Lade Kalendereinträge aus dem Cache wenn möglich
+      if (this.calendarCache.events.length > 0) {
+        return this.filterEventsForDate(this.calendarCache.events, targetDate);
+      }
+
+      // Ansonsten lade neue Daten
+      await this.loadCalendarData();
+      return this.filterEventsForDate(this.calendarCache.events, targetDate);
+    } catch (error) {
+      console.error('Fehler beim Laden der Events:', error);
+      return [];
+    }
+  }
+
+  // Neue Methode für Tasks eines spezifischen Tages
+  public async getTasksForDate(targetDate: Date): Promise<{ 
+    overdueTasks: TodoistTask[],
+    dueTodayTasks: TodoistTask[] 
+  }> {
+    try {
+      const tasks = await this.todoistApi.getTasks();
+      const targetDay = new Date(targetDate);
+      targetDay.setHours(0, 0, 0, 0);
+      
+      const overdueTasks: TodoistTask[] = [];
+      const dueTodayTasks: TodoistTask[] = [];
+
+      for (const task of tasks) {
+        if (task.due) {
+          const dueDate = new Date(task.due.date);
+          dueDate.setHours(0, 0, 0, 0);
+          
+          const mappedTask = {
+            id: task.id,
+            content: task.content,
+            due: {
+              date: task.due.date,
+              datetime: task.due.datetime
+            },
+            priority: task.priority,
+            projectId: task.projectId
+          };
+
+          // Für den heutigen Tag zeigen wir auch überfällige Tasks
+          if (this.isToday(targetDate)) {
+            if (dueDate < targetDay) {
+              overdueTasks.push(mappedTask);
+            } else if (dueDate.getTime() === targetDay.getTime()) {
+              dueTodayTasks.push(mappedTask);
+            }
+          } else {
+            // Für andere Tage nur die Tasks des spezifischen Tages
+            if (dueDate.getTime() === targetDay.getTime()) {
+              dueTodayTasks.push(mappedTask);
+            }
+          }
+        }
+      }
+
+      return { overdueTasks, dueTodayTasks };
+    } catch (error) {
+      console.error('Fehler beim Laden der Tasks:', error);
+      return { overdueTasks: [], dueTodayTasks: [] };
+    }
+  }
+
+  // Hilfsmethode zum Filtern der Events für ein spezifisches Datum
+  private filterEventsForDate(events: TimeSlot[], targetDate: Date): TimeSlot[] {
+    const targetDay = new Date(targetDate);
+    targetDay.setHours(0, 0, 0, 0);
+    
+    const nextDay = new Date(targetDay);
+    nextDay.setDate(nextDay.getDate() + 1);
+
+    return events
+      .filter(event => {
+        const eventStart = new Date(event.start);
+        return eventStart >= targetDay && eventStart < nextDay;
+      })
+      .sort((a, b) => {
+        const dateA = new Date(a.start);
+        const dateB = new Date(b.start);
+        return dateA.getTime() - dateB.getTime();
+      });
+  }
+
+  private isToday(date: Date): boolean {
+    const today = new Date();
+    return date.getDate() === today.getDate() &&
+      date.getMonth() === today.getMonth() &&
+      date.getFullYear() === today.getFullYear();
+  }
+
+  public async getFreeTimeSlotsForDate(targetDate: Date): Promise<TimeSlot[]> {
+    const events = await this.getEventsForDate(targetDate);
+    const targetDay = new Date(targetDate);
+    targetDay.setHours(0, 0, 0, 0);
+    
+    // Arbeitszeitgrenzen für den Tag
+    const workStart = new Date(targetDay);
+    workStart.setHours(parseInt(process.env.WORK_BEGIN || '9'), 0, 0, 0);
+    
+    const workEnd = new Date(targetDay);
+    workEnd.setHours(parseInt(process.env.WORK_END || '17'), 0, 0, 0);
+    
+    const freeSlots: TimeSlot[] = [];
+    let currentTime = workStart;
+
+    // Sortiere Events nach Startzeit
+    const sortedEvents = [...events].sort((a, b) => 
+      new Date(a.start).getTime() - new Date(b.start).getTime()
+    );
+
+    for (const event of sortedEvents) {
+      const eventStart = new Date(event.start);
+      if (currentTime < eventStart) {
+        freeSlots.push({
+          start: currentTime,
+          end: eventStart,
+          title: 'Frei',
+          duration: this.calculateDuration(currentTime, eventStart)
+        });
+      }
+      currentTime = new Date(event.end);
+    }
+
+    // Füge letzten Slot bis Arbeitsende hinzu
+    if (currentTime < workEnd) {
+      freeSlots.push({
+        start: currentTime,
+        end: workEnd,
+        title: 'Frei',
+        duration: this.calculateDuration(currentTime, workEnd)
+      });
+    }
+
+    return freeSlots;
+  }
+
+  private async updateTaskContext() {
+    try {
+      // Lade aktuelle Tasks
+      const tasks = await this.todoistApi.getTasks();
+      this.todoistTasks = tasks;
+
+      // Erstelle Kontext aus Tasks und Kalenderdaten
+      const taskContext = tasks.map(task => ({
+        title: task.content,
+        project: task.projectId,
+        due: task.due?.date || 'Kein Datum',
+        priority: task.priority
+      }));
+
+      // Füge Kalenderevents zum Kontext hinzu
+      const calendarContext = this.calendarCache.events.map(event => ({
+        title: event.title,
+        start: event.start,
+        end: event.end
+      }));
+
+      // Kombiniere alles in einen Kontext-String
+      this.allTasksContext = JSON.stringify({
+        tasks: taskContext,
+        calendar: calendarContext
+      }, null, 2);
+
+      this.lastContextUpdate = Date.now();
+      
+      emitLog({ 
+        message: 'Kontext aktualisiert', 
+        emoji: '🔄' 
+      });
+    } catch (error) {
+      console.error('Fehler beim Aktualisieren des Kontexts:', error);
+      throw error;
+    }
+  }
+
+  private async loadOptimizedTasks() {
+    try {
+      const exists = await fs.access(this.OPTIMIZED_TASKS_FILE).then(() => true).catch(() => false);
+      if (exists) {
+        const data = await fs.readFile(this.OPTIMIZED_TASKS_FILE, 'utf-8');
+        this.optimizedTasks = JSON.parse(data);
+        emitLog({ message: `${this.optimizedTasks.length} optimierte Tasks geladen`, emoji: '💾' });
+      }
+    } catch (error) {
+      console.error('Fehler beim Laden der optimierten Tasks:', error);
+    }
+  }
+
+  private async getCacheAge(): Promise<number> {
+    try {
+      const exists = await fs.access(this.CONTEXT_CACHE_FILE).then(() => true).catch(() => false);
+      if (!exists) {
+        return Infinity; // Wenn kein Cache existiert, maximales Alter zurückgeben
+      }
+
+      const stats = await fs.stat(this.CONTEXT_CACHE_FILE);
+      const lastModified = stats.mtimeMs;
+      return Date.now() - lastModified;
+    } catch (error) {
+      console.error('Fehler beim Prüfen des Cache-Alters:', error);
+      return Infinity; // Im Fehlerfall maximales Alter zurückgeben
+    }
   }
 } 

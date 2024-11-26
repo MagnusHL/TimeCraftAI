@@ -1,12 +1,16 @@
 import { CalendarPlanner } from '@/lib/services/calendar-planner'
-import { NextResponse } from 'next/server'
+import { NextResponse, NextRequest } from 'next/server'
 import { emitProgress } from './progress/route'
 
-export async function GET(request: Request) {
+export async function GET(req: NextRequest) {
+  const searchParams = req.nextUrl.searchParams
+  const dateParam = searchParams.get('date')
+  const date = dateParam ? new Date(dateParam) : new Date()
+  
   console.log('=== Dashboard API Start ===');
   try {
     console.log('🚀 Dashboard API aufgerufen');
-    const url = new URL(request.url);
+    const url = new URL(req.url);
     console.log('URL:', url.toString());
     console.log('SearchParams:', Object.fromEntries(url.searchParams));
 
@@ -18,12 +22,11 @@ export async function GET(request: Request) {
     await planner.initialize();
     console.log('🔑 MS Graph initialisiert');
     
-    const searchParams = new URL(request.url).searchParams;
     const forceUpdate = searchParams.get('force') === 'true';
     console.log(`🔄 Force Update: ${forceUpdate}`);
     
     console.log('📊 Lade Dashboard Daten...');
-    const dashboardData = await planner.getDashboardData(forceUpdate);
+    const dashboardData = await planner.getDashboardData(forceUpdate, date);
     console.log('✅ Dashboard Daten geladen:', {
       events: dashboardData.events.length,
       overdueTasks: dashboardData.overdueTasks.length,

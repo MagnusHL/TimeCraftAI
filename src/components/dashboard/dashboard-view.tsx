@@ -21,6 +21,10 @@ import type { ProgressUpdate } from '@/app/api/dashboard/progress/route'
 import { cn } from "@/lib/utils"
 import { Terminal, FileText, LayoutDashboard, Calendar, CheckSquare, Settings } from "lucide-react"
 import type { LogEntry } from '@/types/logs';
+import { ChevronLeft, ChevronRight } from "lucide-react"
+import { format } from "date-fns"
+import { de } from "date-fns/locale"
+import { DatePicker } from "@/components/date-picker"
 
 // Hilfsfunktion für konsistente Datumsformatierung
 const formatTime = (date: Date | string) => {
@@ -39,6 +43,11 @@ const formatDate = (date: Date | string) => {
     month: '2-digit',
     year: 'numeric'
   });
+};
+
+// Hilfsfunktion für die Datumsformatierung
+const formatDateForDisplay = (date: Date) => {
+  return format(date, "d. MMMM yyyy", { locale: de });
 };
 
 function TaskCard({ task, suggestions, isDueToday, onTitleUpdate }: { 
@@ -319,24 +328,42 @@ export function DashboardView() {
   const [activeTab, setActiveTab] = useState("overview");
   const [context, setContext] = useState<string>('');
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date())
 
-  // Definiere refreshDashboard als useCallback
-  const refreshDashboard = useCallback(async () => {
+  // Hilfsfunktion zum Prüfen ob ein Datum heute ist
+  const isToday = (date: Date) => {
+    const today = new Date()
+    return date.getDate() === today.getDate() &&
+      date.getMonth() === today.getMonth() &&
+      date.getFullYear() === today.getFullYear()
+  }
+
+  // Vereinfachte handleDateChange Funktion
+  const handleDateChange = useCallback(async (newDate: Date) => {
+    console.log('Neues Datum ausgewählt:', newDate)
+    setSelectedDate(newDate)
+    
     try {
-      setIsLoading(true);
-      const response = await fetch('/api/dashboard?force=true');
+      setIsLoading(true)
+      // Nur die Daten für den spezifischen Tag laden
+      const response = await fetch(`/api/dashboard/daily?date=${newDate.toISOString()}`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const newData = await response.json();
       setData(newData);
-      setLastContextUpdate(new Date());
     } catch (error) {
-      console.error('Refresh Fehler:', error);
+      console.error('Fehler beim Laden der Tagesdaten:', error);
       setError(error instanceof Error ? error.message : 'Unbekannter Fehler');
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  // Initial Setup (nur einmal beim Start)
+  useEffect(() => {
+    handleDateChange(new Date());
+  }, []);
+
+  // EventSource setup effect
   useEffect(() => {
     let eventSource: EventSource | null = null;
 
@@ -401,25 +428,6 @@ export function DashboardView() {
       };
     };
 
-    // Initial load
-    const loadInitialData = async () => {
-      try {
-        setIsLoading(true);
-        console.log('🔄 Lade initiale Daten...');
-        const response = await fetch('/api/dashboard');
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const initialData = await response.json();
-        console.log('📥 Initiale Daten geladen:', initialData);
-        setData(initialData);
-      } catch (error) {
-        console.error('Fehler beim initialen Laden:', error);
-        setError(error instanceof Error ? error.message : 'Unbekannter Fehler');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadInitialData();
     setupEventSource();
 
     return () => {
@@ -466,23 +474,27 @@ export function DashboardView() {
     };
   }, [data, optimizedTasks]);
 
-  // Lade Kontext wenn nötig
+  // Kontext-Management
   useEffect(() => {
-    if (activeTab === "context") {
-      fetchContext();
-    }
-  }, [activeTab]);
+    let intervalId: NodeJS.Timeout;
+    
+    const updateContext = async () => {
+      try {
+        const response = await fetch('/api/dashboard/context');
+        const data = await response.json();
+        setContext(data.context);
+        setLastContextUpdate(new Date());
+      } catch (error) {
+        console.error('Fehler beim Kontext-Update:', error);
+      }
+    };
 
-  const fetchContext = async () => {
-    try {
-      const response = await fetch('/api/dashboard/context');
-      const data = await response.json();
-      setContext(data.context);
-    } catch (error) {
-      console.error('Fehler beim Laden des Kontexts:', error);
-      setContext('Fehler beim Laden des Kontexts');
-    }
-  };
+    // Initial und dann alle 5 Minuten
+    updateContext();
+    intervalId = setInterval(updateContext, 5 * 60 * 1000);
+
+    return () => clearInterval(intervalId);
+  }, []);
 
   const handleTitleUpdate = useCallback(async (taskId: string, newTitle: string) => {
     try {
@@ -585,7 +597,25 @@ export function DashboardView() {
           activeTab === "overview" && "block",
           activeTab !== "overview" && "hidden"
         )}>
-          <h2 className="text-2xl font-semibold mb-6">Tagesübersicht</h2>
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-semibold">Tagesübersicht</h2>
+            
+            <div className="flex items-center gap-2">
+              <DatePicker 
+                date={selectedDate}
+                onDateChange={handleDateChange}
+              />
+              
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleDateChange(new Date())}
+                disabled={isToday(selectedDate)}
+              >
+                Heute
+              </Button>
+            </div>
+          </div>
           
           {/* Statistik-Karten */}
           <div className="grid gap-6 md:grid-cols-3 mb-6">
@@ -601,23 +631,26 @@ export function DashboardView() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="h-5 w-5 text-red-500" />
-                  <h3 className="font-medium">Überfällige Aufgaben</h3>
-                </div>
-                <p className="text-2xl font-bold mt-2">
-                  {displayData?.overdueTasks?.length || 0}
-                </p>
-              </CardContent>
-            </Card>
+            {/* Überfällige Aufgaben nur anzeigen wenn heute */}
+            {isToday(selectedDate) && (
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-5 w-5 text-red-500" />
+                    <h3 className="font-medium">Überfällige Aufgaben</h3>
+                  </div>
+                  <p className="text-2xl font-bold mt-2">
+                    {displayData?.overdueTasks?.length || 0}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
 
             <Card>
               <CardContent className="pt-6">
                 <div className="flex items-center gap-2">
                   <Clock className="h-5 w-5 text-green-500" />
-                  <h3 className="font-medium">Heute fällig</h3>
+                  <h3 className="font-medium">Fällig am {formatDateForDisplay(selectedDate)}</h3>
                 </div>
                 <p className="text-2xl font-bold mt-2">
                   {displayData?.dueTodayTasks?.length || 0}
@@ -630,7 +663,7 @@ export function DashboardView() {
           <div className="flex gap-6">
             {/* Kalender-Bereich (1/3) */}
             <div className="w-1/3">
-              <h3 className="text-lg font-medium mb-4">Termine heute</h3>
+              <h3 className="text-lg font-medium mb-4">Termine am {formatDateForDisplay(selectedDate)}</h3>
               <div className="space-y-2">
                 {displayData?.events?.map((event, i) => (
                   <div key={i} className="flex flex-col p-3 border rounded-lg hover:bg-muted/50">
@@ -648,30 +681,32 @@ export function DashboardView() {
 
             {/* Aufgaben-Bereich (2/3) */}
             <div className="w-2/3 space-y-6">
-              {/* Überfällige Aufgaben */}
-              <div>
-                <h3 className="text-lg font-medium text-red-600 mb-4 flex items-center gap-2">
-                  <AlertCircle className="h-5 w-5" />
-                  Überfällige Aufgaben
-                </h3>
-                <div className="space-y-2">
-                  {displayData?.overdueTasks?.map((task) => (
-                    <TaskCard 
-                      key={task.id}
-                      task={task}
-                      suggestions={displayData.taskSuggestions[task.id]}
-                      isDueToday={false}
-                      onTitleUpdate={handleTitleUpdate}
-                    />
-                  ))}
+              {/* Überfällige Aufgaben nur wenn heute */}
+              {isToday(selectedDate) && displayData?.overdueTasks?.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-medium text-red-600 mb-4 flex items-center gap-2">
+                    <AlertCircle className="h-5 w-5" />
+                    Überfällige Aufgaben
+                  </h3>
+                  <div className="space-y-2">
+                    {displayData?.overdueTasks?.map((task) => (
+                      <TaskCard 
+                        key={task.id}
+                        task={task}
+                        suggestions={displayData.taskSuggestions[task.id]}
+                        isDueToday={false}
+                        onTitleUpdate={handleTitleUpdate}
+                      />
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Heute fällige Aufgaben */}
+              {/* Fällige Aufgaben */}
               <div>
                 <h3 className="text-lg font-medium text-blue-600 mb-4 flex items-center gap-2">
                   <Clock className="h-5 w-5" />
-                  Heute fällige Aufgaben
+                  Fällig am {formatDateForDisplay(selectedDate)}
                 </h3>
                 <div className="space-y-2">
                   {displayData?.dueTodayTasks?.map((task) => (
